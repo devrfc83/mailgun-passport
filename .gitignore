@@ -1,0 +1,22 @@
+# Binaries
+/mailgun-passport
+/dist/
+/*.exe
+
+# Build artifacts
+/build/
+/rpmbuild*/
+/debian-build*/
+*.rpm
+*.deb
+*.tar.gz
+
+# Env files
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
