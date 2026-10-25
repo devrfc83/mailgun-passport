@@ -1,18 +1,10 @@
-# Binaries
-/mailgun-passport
+# Build output (binaries and packages)
 /dist/
-/*.exe
 
-# Build artifacts
-/build/
-/rpmbuild*/
-/debian-build*/
-*.rpm
-*.deb
-*.tar.gz
-
-# Env files
+# Env files (may hold API keys)
 .env
+.env.*
+!.env.example
 
 # IDE
 .vscode/

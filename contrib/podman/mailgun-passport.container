@@ -1,0 +1,28 @@
+# Podman Quadlet unit. Copy to /etc/containers/systemd/ (or
+# ~/.config/containers/systemd/ for a rootless user), create the env file and run:
+#   systemctl daemon-reload && systemctl start mailgun-passport
+[Unit]
+Description=Mailgun Passport (local SMTP relay to the Mailgun API)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+# Built with `make image` by the same user (root for /etc/containers/systemd).
+# Point it at a registry instead once the image is published, e.g.
+# ghcr.io/devrfc83/mailgun-passport:latest.
+Image=localhost/mailgun-passport:latest
+# Same format as .env.example. With SMTP_USERNAME/SMTP_PASSWORD set, add
+# SMTP_ALLOW_INSECURE_AUTH=true or configure STARTTLS.
+EnvironmentFile=/etc/mailgun-passport/mailgun-passport.env
+# Only reachable from this host.
+PublishPort=127.0.0.1:587:2525
+ReadOnly=true
+DropCapability=ALL
+NoNewPrivileges=true
+
+[Service]
+Restart=on-failure
+RestartPreventExitStatus=2
+
+[Install]
+WantedBy=multi-user.target default.target

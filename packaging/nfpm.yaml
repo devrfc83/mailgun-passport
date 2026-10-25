@@ -1,0 +1,77 @@
+# nFPM configuration (https://nfpm.goreleaser.com). `make packages` sets
+# VERSION and ARCH and runs nFPM once per architecture and format.
+#
+# The binary is static (CGO_ENABLED=0), so a single .rpm serves Fedora and
+# RHEL/Alma/Rocky 8-10, and a single .deb serves Debian 12+ and Ubuntu 24.04+.
+name: mailgun-passport
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+version_schema: semver
+release: 1
+section: mail
+priority: optional
+maintainer: Rodrigo Fuentealba Cartes <121529607+devrfc83@users.noreply.github.com>
+vendor: Rodrigo Fuentealba Cartes
+homepage: https://github.com/devrfc83/mailgun-passport
+license: MIT
+description: |-
+  Local SMTP relay that forwards mail to the Mailgun HTTP API.
+  Mailgun Passport accepts mail over SMTP and delivers it through the Mailgun
+  HTTP API, for applications that only speak SMTP on hosts where outbound SMTP
+  is blocked. It is an independent project, not affiliated with Mailgun.
+
+depends:
+  - ca-certificates
+
+contents:
+  - src: ./dist/linux_${ARCH}/mailgun-passport
+    dst: /usr/bin/mailgun-passport
+    expand: true
+    file_info:
+      mode: 0755
+
+  - src: ./contrib/systemd/mailgun-passport.service
+    dst: /usr/lib/systemd/system/mailgun-passport.service
+    file_info:
+      mode: 0644
+
+  - src: ./packaging/sysusers.conf
+    dst: /usr/lib/sysusers.d/mailgun-passport.conf
+    file_info:
+      mode: 0644
+
+  - dst: /etc/mailgun-passport
+    type: dir
+    file_info:
+      mode: 0755
+
+  # Holds the Mailgun API key: root only. systemd reads it before dropping privileges.
+  - src: ./.env.example
+    dst: /etc/mailgun-passport/mailgun-passport.env
+    type: config|noreplace
+    file_info:
+      mode: 0600
+
+  - src: ./README.md
+    dst: /usr/share/doc/mailgun-passport/README.md
+    file_info:
+      mode: 0644
+
+  - src: ./LICENSE
+    dst: /usr/share/licenses/mailgun-passport/LICENSE
+    type: license
+    packager: rpm
+    file_info:
+      mode: 0644
+
+  - src: ./LICENSE
+    dst: /usr/share/doc/mailgun-passport/copyright
+    packager: deb
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: ./packaging/scripts/postinstall.sh
+  preremove: ./packaging/scripts/preremove.sh
+  postremove: ./packaging/scripts/postremove.sh

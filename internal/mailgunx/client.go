@@ -3,9 +3,12 @@ package mailgunx
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -48,8 +51,57 @@ func applyAPIBase(mg *mailgun.Client, base string) error {
 	case "eu", "https://api.eu.mailgun.net":
 		return mg.SetAPIBase(mailgun.APIBaseEU)
 	default:
-		return mg.SetAPIBase(base)
+		return mg.SetAPIBase(strings.TrimRight(base, "/"))
 	}
+}
+
+// Error describes a failed Mailgun API call.
+type Error struct {
+	// Status is the HTTP status returned by Mailgun, or 0 if it was not reached.
+	Status int
+	// Reason is a short description that is safe to return to SMTP clients.
+	Reason string
+	Err    error
+}
+
+func (e *Error) Error() string         { return e.Err.Error() }
+func (e *Error) Unwrap() error         { return e.Err }
+func (e *Error) ClientMessage() string { return e.Reason }
+
+// Temporary reports whether sending the same message later may succeed.
+// Authentication and unknown-domain errors count as temporary: they are
+// operator mistakes, and the client should keep the message until they are fixed.
+func (e *Error) Temporary() bool {
+	switch e.Status {
+	case 0, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound,
+		http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	}
+	return e.Status >= 500
+}
+
+func newError(err error) *Error {
+	var apiErr *mailgun.UnexpectedResponseError
+	if !errors.As(err, &apiErr) {
+		return &Error{Reason: "Mailgun API unreachable", Err: err}
+	}
+	reason := fmt.Sprintf("Mailgun API returned HTTP %d", apiErr.Actual)
+	var body struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(apiErr.Data, &body) == nil && body.Message != "" {
+		reason += ": " + sanitize(body.Message, 200)
+	}
+	return &Error{Status: apiErr.Actual, Reason: reason, Err: err}
+}
+
+// sanitize keeps s on a single SMTP reply line of at most n bytes.
+func sanitize(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > n {
+		s = s[:n]
+	}
+	return s
 }
 
 func (c *Client) Send(ctx context.Context, msg *parser.Message) error {
@@ -66,7 +118,7 @@ func (c *Client) Send(ctx context.Context, msg *parser.Message) error {
 		resp, err = c.sendParsed(ctx, msg)
 	}
 	if err != nil {
-		return fmt.Errorf("mailgun: %w", err)
+		return newError(err)
 	}
 	c.log.Info("message accepted by Mailgun",
 		"id", resp.ID,
@@ -84,8 +136,18 @@ func (c *Client) sendParsed(ctx context.Context, msg *parser.Message) (mtypes.Se
 	for _, cc := range msg.Cc {
 		m.AddCC(cc)
 	}
-	for _, bcc := range msg.Bcc {
-		m.AddBCC(bcc)
+	if len(msg.To) == 0 && len(msg.Cc) == 0 {
+		// The Mailgun API needs a "to" recipient. Recipient variables turn the
+		// call into a batch send, so each hidden recipient only sees itself.
+		for _, r := range msg.Bcc {
+			if err := m.AddRecipientAndVariables(r, map[string]any{}); err != nil {
+				return mtypes.SendMessageResponse{}, err
+			}
+		}
+	} else {
+		for _, bcc := range msg.Bcc {
+			m.AddBCC(bcc)
+		}
 	}
 	if msg.HTML != "" {
 		m.SetHTML(msg.HTML)
@@ -97,13 +159,11 @@ func (c *Client) sendParsed(ctx context.Context, msg *parser.Message) (mtypes.Se
 		m.AddHeader(k, v)
 	}
 	for _, a := range msg.Attachments {
-		data := a.Data
-		name := a.Filename
 		if a.Inline {
-			m.AddReaderInline(name, io.NopCloser(bytes.NewReader(data)))
+			m.AddReaderInline(a.Filename, io.NopCloser(bytes.NewReader(a.Data)))
 			continue
 		}
-		m.AddBufferAttachment(name, data)
+		m.AddBufferAttachment(a.Filename, a.Data)
 	}
 	if c.test {
 		m.EnableTestMode()
@@ -111,14 +171,10 @@ func (c *Client) sendParsed(ctx context.Context, msg *parser.Message) (mtypes.Se
 	return c.mg.Send(ctx, m)
 }
 
+// sendMIME forwards the message untouched (minus Bcc) to the SMTP envelope recipients.
 func (c *Client) sendMIME(ctx context.Context, msg *parser.Message) (mtypes.SendMessageResponse, error) {
-	recipients := append([]string{}, msg.To...)
-	recipients = append(recipients, msg.Cc...)
-	recipients = append(recipients, msg.Bcc...)
-	if len(recipients) == 0 {
-		recipients = append([]string{}, msg.RcptTo...)
-	}
-	m := mailgun.NewMIMEMessage(c.domain, io.NopCloser(bytes.NewReader(msg.Raw)), recipients...)
+	raw := parser.StripHeader(msg.Raw, "Bcc")
+	m := mailgun.NewMIMEMessage(c.domain, io.NopCloser(bytes.NewReader(raw)), msg.RcptTo...)
 	if c.test {
 		m.EnableTestMode()
 	}

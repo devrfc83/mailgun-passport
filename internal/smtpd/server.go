@@ -2,14 +2,17 @@ package smtpd
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
-	"strings"
+	"slices"
 	"sync"
+	"time"
 
 	"github.com/emersion/go-sasl"
 	"github.com/emersion/go-smtp"
@@ -17,6 +20,11 @@ import (
 	"mailgun-passport/internal/config"
 	"mailgun-passport/internal/parser"
 )
+
+const maxAuthFailures = 3
+
+// authFailureDelay slows down password guessing; tests shorten it.
+var authFailureDelay = time.Second
 
 type Sender interface {
 	Send(ctx context.Context, msg *parser.Message) error
@@ -44,7 +52,7 @@ func New(cfg config.Config, sender Sender, log *slog.Logger) (*Server, error) {
 	if cfg.TLSCertFile != "" {
 		cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
 		if err != nil {
-			return nil, fmt.Errorf("cargar certificado TLS: %w", err)
+			return nil, fmt.Errorf("load TLS certificate: %w", err)
 		}
 		srv.TLSConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
@@ -56,7 +64,8 @@ func New(cfg config.Config, sender Sender, log *slog.Logger) (*Server, error) {
 }
 
 func (s *Server) ListenAndServe() error {
-	s.log.Info("listening on SMTP", "addr", s.cfg.Listen, "domain", s.cfg.SMTPDomain)
+	s.log.Info("listening on SMTP", "addr", s.cfg.Listen, "domain", s.cfg.SMTPDomain,
+		"auth", s.cfg.AuthRequired(), "starttls", s.cfg.TLSCertFile != "")
 	return s.smtp.ListenAndServe()
 }
 
@@ -77,16 +86,22 @@ type backend struct {
 	server *Server
 }
 
-func (b *backend) NewSession(_ *smtp.Conn) (smtp.Session, error) {
-	return &session{server: b.server}, nil
+func (b *backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
+	remote := ""
+	if addr := c.Conn().RemoteAddr(); addr != nil {
+		remote = addr.String()
+	}
+	return &session{server: b.server, remote: remote}, nil
 }
 
 type session struct {
-	server   *Server
-	mu       sync.Mutex
-	authed   bool
-	mailFrom string
-	rcptTo   []string
+	server       *Server
+	remote       string
+	mu           sync.Mutex
+	authed       bool
+	authFailures int
+	mailFrom     string
+	rcptTo       []string
 }
 
 func (s *session) AuthMechanisms() []string {
@@ -103,13 +118,28 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 	if mech != sasl.Plain {
 		return nil, smtp.ErrAuthUnknownMechanism
 	}
+	s.mu.Lock()
+	failures := s.authFailures
+	s.mu.Unlock()
+	if failures >= maxAuthFailures {
+		return nil, &smtp.SMTPError{
+			Code:         421,
+			EnhancedCode: smtp.EnhancedCode{4, 7, 0},
+			Message:      "too many authentication failures, reconnect later",
+		}
+	}
 	return sasl.NewPlainServer(func(_, username, password string) error {
-		if subtleEqual(username, s.server.cfg.SMTPUsername) && subtleEqual(password, s.server.cfg.SMTPPassword) {
+		if secretEqual(username, s.server.cfg.SMTPUsername) && secretEqual(password, s.server.cfg.SMTPPassword) {
 			s.mu.Lock()
 			s.authed = true
 			s.mu.Unlock()
 			return nil
 		}
+		s.mu.Lock()
+		s.authFailures++
+		s.mu.Unlock()
+		s.server.log.Warn("SMTP authentication failed", "remote", s.remote, "username", username)
+		time.Sleep(authFailureDelay)
 		return smtp.ErrAuthFailed
 	}), nil
 }
@@ -121,14 +151,26 @@ func (s *session) requireAuth() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.authed {
-		return smtp.ErrAuthRequired
+		return errAuthRequired
 	}
 	return nil
+}
+
+// errAuthRequired is the RFC 4954 reply; go-smtp's own uses 502.
+var errAuthRequired = &smtp.SMTPError{
+	Code:         530,
+	EnhancedCode: smtp.EnhancedCode{5, 7, 0},
+	Message:      "Authentication required",
 }
 
 func (s *session) Mail(from string, _ *smtp.MailOptions) error {
 	if err := s.requireAuth(); err != nil {
 		return err
+	}
+	if from != "" {
+		if err := s.checkSender(from); err != nil {
+			return err
+		}
 	}
 	s.mu.Lock()
 	s.mailFrom = from
@@ -167,13 +209,33 @@ func (s *session) Data(r io.Reader) error {
 			Message:      "invalid message: " + err.Error(),
 		}
 	}
+	if err := s.checkSender(msg.From); err != nil {
+		return err
+	}
 
 	if err := s.server.sender.Send(context.Background(), msg); err != nil {
 		s.server.log.Error("Mailgun rejected message", "err", err, "from", msg.From, "subject", msg.Subject)
-		code, enhanced, text := classifyMailgunError(err)
-		return &smtp.SMTPError{Code: code, EnhancedCode: enhanced, Message: text}
+		return deliveryError(err)
 	}
 	return nil
+}
+
+// checkSender enforces SMTP_ALLOWED_SENDER_DOMAINS on an address.
+func (s *session) checkSender(addr string) error {
+	allowed := s.server.cfg.AllowedSenderDomains
+	if len(allowed) == 0 {
+		return nil
+	}
+	domain, err := parser.AddressDomain(addr)
+	if err == nil && slices.Contains(allowed, domain) {
+		return nil
+	}
+	s.server.log.Warn("sender domain not allowed", "remote", s.remote, "sender", addr)
+	return &smtp.SMTPError{
+		Code:         550,
+		EnhancedCode: smtp.EnhancedCode{5, 7, 1},
+		Message:      "sender domain not allowed",
+	}
 }
 
 func (s *session) Reset() {
@@ -187,25 +249,33 @@ func (s *session) Logout() error {
 	return nil
 }
 
-func classifyMailgunError(err error) (int, smtp.EnhancedCode, string) {
-	msg := err.Error()
-	lower := strings.ToLower(msg)
-	if strings.Contains(lower, "429") || strings.Contains(lower, "timeout") || strings.Contains(lower, "temporar") {
-		return 451, smtp.EnhancedCode{4, 4, 0}, "temporary error sending: " + msg
-	}
-	return 451, smtp.EnhancedCode{4, 3, 0}, "error sending via Mailgun: " + msg
+// DeliveryError is implemented by Sender errors that know whether a retry may
+// succeed and how to describe the failure to the SMTP client.
+type DeliveryError interface {
+	error
+	Temporary() bool
+	ClientMessage() string
 }
 
-func subtleEqual(a, b string) bool {
-	if len(a) != len(b) {
-		_ = a == b
-		return false
+// deliveryError maps a send failure to an SMTP reply: 451 asks the client to
+// retry later, 554 tells it the message will never be accepted. Errors of
+// unknown kind are treated as temporary so no message is dropped.
+func deliveryError(err error) *smtp.SMTPError {
+	var de DeliveryError
+	if !errors.As(err, &de) {
+		return &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 0}, Message: "error sending via Mailgun, try again later"}
 	}
-	var v byte
-	for i := 0; i < len(a); i++ {
-		v |= a[i] ^ b[i]
+	if !de.Temporary() {
+		return &smtp.SMTPError{Code: 554, EnhancedCode: smtp.EnhancedCode{5, 0, 0}, Message: de.ClientMessage()}
 	}
-	return v == 0
+	return &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 4, 0}, Message: de.ClientMessage() + ", try again later"}
+}
+
+// secretEqual compares in constant time without leaking the secret's length.
+func secretEqual(a, b string) bool {
+	ha := sha256.Sum256([]byte(a))
+	hb := sha256.Sum256([]byte(b))
+	return subtle.ConstantTimeCompare(ha[:], hb[:]) == 1
 }
 
 func IsClosed(err error) bool {

@@ -1,0 +1,7 @@
+# Only the Go sources are needed; this keeps .env (API keys), .git and dist/
+# out of the build context.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/

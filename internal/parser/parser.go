@@ -20,6 +20,11 @@ type Attachment struct {
 }
 
 // Message is the interpretation of an SMTP message (envelope + MIME).
+//
+// The SMTP envelope (RcptTo) decides who receives the message. To and Cc
+// keep the header recipients that are also in the envelope, and Bcc holds the
+// envelope recipients that no header mentions. Header recipients that are not
+// in the envelope are never delivered to.
 type Message struct {
 	MailFrom    string
 	RcptTo      []string
@@ -45,6 +50,9 @@ func Parse(mailFrom string, rcptTo []string, r io.Reader, maxBytes int64) (*Mess
 	if int64(len(raw)) > maxBytes {
 		return nil, fmt.Errorf("message larger than SMTP_MAX_MESSAGE_BYTES (%d)", maxBytes)
 	}
+	if len(rcptTo) == 0 {
+		return nil, fmt.Errorf("message has no recipients")
+	}
 
 	env, err := enmime.ReadEnvelope(bytes.NewReader(raw))
 	if err != nil {
@@ -55,9 +63,6 @@ func Parse(mailFrom string, rcptTo []string, r io.Reader, maxBytes int64) (*Mess
 		MailFrom: mailFrom,
 		RcptTo:   append([]string{}, rcptTo...),
 		From:     firstNonEmpty(env.GetHeader("From"), mailFrom),
-		To:       splitAddresses(env.GetHeader("To")),
-		Cc:       splitAddresses(env.GetHeader("Cc")),
-		Bcc:      splitAddresses(env.GetHeader("Bcc")),
 		ReplyTo:  env.GetHeader("Reply-To"),
 		Subject:  env.GetHeader("Subject"),
 		Text:     env.Text,
@@ -65,6 +70,9 @@ func Parse(mailFrom string, rcptTo []string, r io.Reader, maxBytes int64) (*Mess
 		Headers:  selectedHeaders(env),
 		Raw:      raw,
 	}
+	msg.To, msg.Cc, msg.Bcc = splitRecipients(rcptTo,
+		splitAddresses(env.GetHeader("To")),
+		splitAddresses(env.GetHeader("Cc")))
 
 	for _, a := range env.Attachments {
 		msg.Attachments = append(msg.Attachments, partToAttachment(a, false))
@@ -73,12 +81,8 @@ func Parse(mailFrom string, rcptTo []string, r io.Reader, maxBytes int64) (*Mess
 		msg.Attachments = append(msg.Attachments, partToAttachment(a, true))
 	}
 
-	msg.applyEnvelopeRecipients()
 	if msg.From == "" {
 		return nil, fmt.Errorf("message has no sender")
-	}
-	if len(msg.deliveryRecipients()) == 0 {
-		return nil, fmt.Errorf("message has no recipients")
 	}
 	if msg.Text == "" && msg.HTML == "" {
 		msg.Text = " "
@@ -86,58 +90,45 @@ func Parse(mailFrom string, rcptTo []string, r io.Reader, maxBytes int64) (*Mess
 	return msg, nil
 }
 
-func (m *Message) deliveryRecipients() []string {
-	seen := map[string]struct{}{}
-	var out []string
-	add := func(list []string) {
+// splitRecipients assigns every envelope recipient exactly once: to To or Cc
+// when a header names it (keeping the header's display form), otherwise to Bcc.
+func splitRecipients(envelope, headerTo, headerCc []string) (to, cc, bcc []string) {
+	pending := map[string]bool{}
+	for _, a := range envelope {
+		if key := canonicalize(a); key != "" {
+			pending[key] = true
+		}
+	}
+	take := func(list []string) []string {
+		var out []string
 		for _, a := range list {
 			key := canonicalize(a)
-			if key == "" {
-				continue
+			if pending[key] {
+				delete(pending, key)
+				out = append(out, a)
 			}
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			out = append(out, a)
 		}
+		return out
 	}
-	add(m.To)
-	add(m.Cc)
-	add(m.Bcc)
-	return out
-}
-
-func (m *Message) applyEnvelopeRecipients() {
-	if len(m.To) == 0 && len(m.Cc) == 0 && len(m.Bcc) == 0 {
-		m.To = append([]string{}, m.RcptTo...)
-		return
-	}
-	known := map[string]struct{}{}
-	for _, a := range m.To {
-		known[canonicalize(a)] = struct{}{}
-	}
-	for _, a := range m.Cc {
-		known[canonicalize(a)] = struct{}{}
-	}
-	for _, a := range m.Bcc {
-		known[canonicalize(a)] = struct{}{}
-	}
-	for _, a := range m.RcptTo {
+	to = take(headerTo)
+	cc = take(headerCc)
+	for _, a := range envelope {
 		key := canonicalize(a)
-		if key == "" {
-			continue
+		if pending[key] {
+			delete(pending, key)
+			bcc = append(bcc, a)
 		}
-		if _, ok := known[key]; ok {
-			continue
-		}
-		m.Bcc = append(m.Bcc, a)
-		known[key] = struct{}{}
 	}
+	return to, cc, bcc
 }
 
 func partToAttachment(p *enmime.Part, inline bool) Attachment {
 	name := p.FileName
+	// Mailgun derives the Content-ID of an inline part from its file name, so
+	// the original Content-ID must be used or cid: references in HTML break.
+	if inline && p.ContentID != "" {
+		name = p.ContentID
+	}
 	if name == "" {
 		name = p.ContentID
 	}
@@ -168,6 +159,62 @@ func selectedHeaders(env *enmime.Envelope) map[string]string {
 		}
 	}
 	return out
+}
+
+// StripHeader returns raw with every occurrence of the named header field
+// (including folded continuation lines) removed from the header section.
+func StripHeader(raw []byte, name string) []byte {
+	end := headerEnd(raw)
+	out := make([]byte, 0, len(raw))
+	prefix := strings.ToLower(name) + ":"
+	skipping := false
+	for rest := raw[:end]; len(rest) > 0; {
+		line := rest
+		if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+			line = rest[:i+1]
+		}
+		rest = rest[len(line):]
+		if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
+			if !skipping {
+				out = append(out, line...)
+			}
+			continue
+		}
+		skipping = strings.HasPrefix(strings.ToLower(string(line)), prefix)
+		if !skipping {
+			out = append(out, line...)
+		}
+	}
+	return append(out, raw[end:]...)
+}
+
+// headerEnd returns the offset of the blank line that ends the header section.
+func headerEnd(raw []byte) int {
+	for i := 0; i < len(raw); {
+		j := bytes.IndexByte(raw[i:], '\n')
+		if j < 0 {
+			return len(raw)
+		}
+		line := bytes.TrimRight(raw[i:i+j], "\r")
+		if len(line) == 0 {
+			return i
+		}
+		i += j + 1
+	}
+	return len(raw)
+}
+
+// AddressDomain returns the lower-cased domain of a single RFC 5322 address.
+func AddressDomain(addr string) (string, error) {
+	parsed, err := mail.ParseAddress(addr)
+	if err != nil {
+		return "", err
+	}
+	at := strings.LastIndexByte(parsed.Address, '@')
+	if at < 0 {
+		return "", fmt.Errorf("address %q has no domain", parsed.Address)
+	}
+	return strings.ToLower(parsed.Address[at+1:]), nil
 }
 
 func splitAddresses(header string) []string {

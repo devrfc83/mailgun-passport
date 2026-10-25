@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -16,25 +18,54 @@ import (
 	"mailgun-passport/internal/smtpd"
 )
 
+// Set at build time with -ldflags "-X main.version=...".
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildDate = "unknown"
+)
+
+// Exit codes. The systemd unit uses RestartPreventExitStatus=2 so a bad
+// configuration does not end up in a restart loop.
+const (
+	exitFailure = 1
+	exitConfig  = 2
+)
+
 func main() {
-	cfg, err := config.Load()
-	log := newLogger(envLogLevel(), envLogFile())
-	if err != nil {
-		log.Error("invalid configuration", "err", err)
-		os.Exit(1)
+	showVersion := flag.Bool("version", false, "print version information and exit")
+	flag.Parse()
+	if *showVersion {
+		fmt.Printf("mailgun-passport %s (commit %s, built %s, %s)\n", version, commit, buildDate, runtime.Version())
+		return
 	}
-	log = newLogger(cfg.LogLevel, cfg.LogFile)
+	os.Exit(run())
+}
+
+func run() int {
+	cfg, err := config.Load()
+	if err != nil {
+		slog.New(slog.NewTextHandler(os.Stderr, nil)).Error("invalid configuration", "err", err)
+		return exitConfig
+	}
+	log, closeLog, err := newLogger(cfg.LogLevel, cfg.LogFile)
+	if err != nil {
+		slog.New(slog.NewTextHandler(os.Stderr, nil)).Error("cannot open LOG_FILE", "err", err)
+		return exitConfig
+	}
+	defer closeLog()
+	log.Info("starting mailgun-passport", "version", version, "commit", commit, "mode", cfg.MailgunSendMode)
 
 	client, err := mailgunx.New(cfg, log)
 	if err != nil {
 		log.Error("failed to create Mailgun client", "err", err)
-		os.Exit(1)
+		return exitConfig
 	}
 
 	srv, err := smtpd.New(cfg, client, log)
 	if err != nil {
 		log.Error("failed to create SMTP server", "err", err)
-		os.Exit(1)
+		return exitConfig
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -47,7 +78,8 @@ func main() {
 
 	select {
 	case <-ctx.Done():
-		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// Give in-flight Mailgun calls time to finish so their clients get an answer.
+		shutCtx, cancel := context.WithTimeout(context.Background(), cfg.MailgunTimeout+5*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutCtx); err != nil {
 			log.Error("error stopping SMTP server", "err", err)
@@ -57,28 +89,20 @@ func main() {
 	case err := <-errCh:
 		if err != nil && !smtpd.IsClosed(err) {
 			log.Error("SMTP server terminated", "err", err)
-			os.Exit(1)
+			return exitFailure
 		}
 	}
+	return 0
 }
 
-func envLogLevel() string {
-	return strings.TrimSpace(os.Getenv("LOG_LEVEL"))
-}
-
-func envLogFile() string {
-	if v := strings.TrimSpace(os.Getenv("LOG_FILE")); v != "" {
-		return v
-	}
-	return "/var/log/mailgun-passport.log"
-}
-
-func newLogger(level string, logFile string) *slog.Logger {
+// newLogger logs to stderr (the journal under systemd, the container log under
+// Docker/Podman) and additionally to logFile when one is configured.
+func newLogger(level string, logFile string) (*slog.Logger, func(), error) {
 	var lv slog.Level
-	switch strings.ToLower(strings.TrimSpace(level)) {
+	switch level {
 	case "debug":
 		lv = slog.LevelDebug
-	case "warn", "warning":
+	case "warn":
 		lv = slog.LevelWarn
 	case "error":
 		lv = slog.LevelError
@@ -86,15 +110,16 @@ func newLogger(level string, logFile string) *slog.Logger {
 		lv = slog.LevelInfo
 	}
 
-	var w io.Writer = os.Stdout
-	logFile = strings.TrimSpace(logFile)
-	if logFile != "" && logFile != "-" {
-		if err := os.MkdirAll(filepath.Dir(logFile), 0755); err == nil {
-			if f, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0640); err == nil {
-				w = io.MultiWriter(os.Stdout, f)
-			}
+	var w io.Writer = os.Stderr
+	closeFn := func() {}
+	if logFile = strings.TrimSpace(logFile); logFile != "" && logFile != "-" {
+		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+		if err != nil {
+			return nil, nil, err
 		}
+		w = io.MultiWriter(os.Stderr, f)
+		closeFn = func() { _ = f.Close() }
 	}
 
-	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: lv}))
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: lv})), closeFn, nil
 }

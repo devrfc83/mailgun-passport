@@ -1,5 +1,6 @@
 [Unit]
-Description=Mailgun Passport (SMTP local → Mailgun API)
+Description=Mailgun Passport (local SMTP relay to the Mailgun API)
+Documentation=https://github.com/devrfc83/mailgun-passport
 After=network-online.target
 Wants=network-online.target
 
@@ -7,30 +8,49 @@ Wants=network-online.target
 Type=simple
 User=mailgun-passport
 Group=mailgun-passport
-WorkingDirectory=/opt/mailgun-passport
-ExecStart=/usr/local/bin/mailgun-passport
+ExecStart=/usr/bin/mailgun-passport
 Restart=on-failure
-RestartSec=3
+RestartSec=5
+# Exit status 2 means invalid configuration: restarting will not fix it.
+RestartPreventExitStatus=2
 
-# Prefer an environment file (does not override variables already defined).
-EnvironmentFile=-/etc/mailgun-passport.env
+# Read by systemd as root, so the file can stay 0600 root:root.
+EnvironmentFile=-/etc/mailgun-passport/mailgun-passport.env
+# Per-setting overrides belong in a drop-in: systemctl edit mailgun-passport
 
-# Alternative: SetEnv / Environment= in this unit.
-# Environment=SMTP_LISTEN=127.0.0.1:587
-# Environment=MAILGUN_API_KEY=key-xxxxxxxx
-# Environment=MAILGUN_DOMAIN=mg.example.com
-# Environment=MAILGUN_API_BASE=us
-# Environment=MAILGUN_SEND_MODE=parsed
-# Environment=LOG_FILE=/var/log/mailgun-passport.log
+# Logs go to the journal. For a file as well, set
+# LOG_FILE=/var/log/mailgun-passport/mailgun-passport.log (this directory is writable).
+LogsDirectory=mailgun-passport
+LogsDirectoryMode=0750
 
-# Port 587 is privileged if the process is not root.
+# Port 587 is privileged.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
+
+# Hardening. Directives unknown to older systemd versions are ignored.
+NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-ReadWritePaths=
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
