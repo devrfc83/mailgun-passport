@@ -118,13 +118,7 @@ podman run -d --name mailgun-passport \
 
 For Podman under systemd, [contrib/podman/mailgun-passport.container](contrib/podman/mailgun-passport.container) is a Quadlet unit. Copy it to `/etc/containers/systemd/`, then run `systemctl daemon-reload && systemctl start mailgun-passport`.
 
-### Publishing the image
-
-```bash
-make image IMAGE=ghcr.io/devrfc83/mailgun-passport
-podman push ghcr.io/devrfc83/mailgun-passport:latest
-podman push ghcr.io/devrfc83/mailgun-passport:$(scripts/version.sh | tr + -)
-```
+Released images are published to `ghcr.io/devrfc83/mailgun-passport` and Docker Hub for `linux/amd64` and `linux/arm64`, tagged `X.Y.Z`, `X.Y` and `latest` (see [Releasing](#releasing)).
 
 ## Building
 
@@ -142,9 +136,26 @@ Packages are built with [nFPM](https://nfpm.goreleaser.com), which `go run` fetc
 
 Versions come from `vX.Y.Z` git tags (see [scripts/version.sh](scripts/version.sh)). A tagged commit builds `X.Y.Z`. Later commits build `X.Y.Z+N.gHASH`, plus `.dirty` with uncommitted changes, which sorts after the release in both rpm and dpkg. Override with `make packages VERSION=1.2.3`. `mailgun-passport -version` prints the embedded version.
 
-To release:
+## Releasing
+
+Pushing a `vX.Y.Z` tag runs [.github/workflows/release.yml](.github/workflows/release.yml):
+
+1. `make test`
+2. `make packages` and `make test-packages`, after checking that `scripts/version.sh` matches the tag
+3. a multi-arch image (amd64 and arm64), with SBOM and provenance, pushed to GHCR and Docker Hub
+4. a GitHub release with the `.rpm` and `.deb` files and `SHA256SUMS`. It is created only after steps 2 and 3 succeed. Tags with a suffix such as `v1.0.0-rc1` become prereleases and do not move `latest`.
 
 ```bash
 git tag -a v0.1.0 -m "v0.1.0"
-make test packages test-packages
+git push origin v0.1.0
 ```
+
+One-time setup in GitHub, under Settings → Secrets and variables → Actions:
+
+| Kind | Name | Value |
+| --- | --- | --- |
+| Variable | `DOCKERHUB_NAMESPACE` | the Docker Hub organization |
+| Secret | `DOCKERHUB_TOKEN` | an organization access token with read/write access to `<namespace>/mailgun-passport` |
+| Variable | `DOCKERHUB_USERNAME` | optional. Only needed with a personal access token: the Docker Hub user that owns it. Defaults to `DOCKERHUB_NAMESPACE`. |
+
+The GHCR package is created private on the first push. Make it public under the package settings on GitHub.

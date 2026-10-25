@@ -1,0 +1,182 @@
+# Publishes a release when a vX.Y.Z tag is pushed:
+#   - .rpm/.deb for amd64 and arm64, tested in 15 distribution containers,
+#     attached to a GitHub release together with SHA256SUMS
+#   - a multi-arch image (linux/amd64, linux/arm64) on GHCR and Docker Hub
+#
+# Repository settings required (Settings > Secrets and variables > Actions):
+#   variable DOCKERHUB_NAMESPACE  Docker Hub organization that owns the image
+#   variable DOCKERHUB_USERNAME   login user; defaults to DOCKERHUB_NAMESPACE,
+#                                 which is what organization access tokens use
+#   secret   DOCKERHUB_TOKEN      organization or personal access token with
+#                                 read/write access to <namespace>/mailgun-passport
+#
+# Actions are pinned by commit SHA; the comment shows the release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.27.x"
+  DOCKERHUB_IMAGE: docker.io/${{ vars.DOCKERHUB_NAMESPACE }}/mailgun-passport
+  DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME || vars.DOCKERHUB_NAMESPACE }}
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - run: make test
+
+  packages:
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # scripts/version.sh needs the tags
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Check that the version matches the tag
+        run: |
+          version=$(scripts/version.sh)
+          if [ "$version" != "${GITHUB_REF_NAME#v}" ]; then
+            echo "::error::scripts/version.sh returned $version for tag $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+      - run: make packages
+
+      # Authenticated pulls avoid Docker Hub's anonymous rate limit on shared runners.
+      - name: Log in to Docker Hub for image pulls
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: printf '%s' "$DOCKERHUB_TOKEN" | podman login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+
+      - run: make test-packages CONTAINER=podman
+
+      - name: Write checksums
+        working-directory: dist
+        run: sha256sum -- *.rpm *.deb > SHA256SUMS
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages
+          path: |
+            dist/*.rpm
+            dist/*.deb
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  image:
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check Docker Hub settings
+        env:
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          HAS_TOKEN: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        run: |
+          if [ -z "$DOCKERHUB_NAMESPACE" ] || [ "$HAS_TOKEN" != true ]; then
+            echo "::error::Set the DOCKERHUB_NAMESPACE variable and the DOCKERHUB_TOKEN secret"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read build metadata
+        id: build
+        run: |
+          {
+            echo "version=$(scripts/version.sh)"
+            echo "commit=$(git rev-parse --short HEAD)"
+            echo "date=$(git log -1 --format=%cI)"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: docker.io
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 1.2.3 and 1.2 for every release; "latest" only for non-prerelease tags.
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}
+            ${{ env.DOCKERHUB_IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      # The Dockerfile cross-compiles, so no QEMU emulation is needed for arm64.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          build-args: |
+            VERSION=${{ steps.build.outputs.version }}
+            COMMIT=${{ steps.build.outputs.commit }}
+            BUILD_DATE=${{ steps.build.outputs.date }}
+          provenance: mode=max
+          sbom: true
+
+  # Runs last, so a release only appears once packages and images are published.
+  release:
+    needs: [packages, image]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: dist
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" --verify-tag $prerelease \
+            --title "$GITHUB_REF_NAME" --generate-notes
