@@ -1,0 +1,14 @@
+# Keeps the pinned digests and SHAs current: the Dockerfile's base images and
+# the GitHub Actions used by the workflows. Go modules are left to
+# govulncheck in CI and updated by hand.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

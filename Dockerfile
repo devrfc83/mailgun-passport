@@ -1,6 +1,9 @@
+# Base images are pinned by the digest of their multi-arch index, so a build
+# is reproducible and a moved tag cannot change it; Dependabot bumps them.
+
 # Build stage: runs on the build host's platform and cross-compiles, so
 # `--platform linux/arm64` does not need emulation.
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27 AS builder
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27@sha256:f20d83a83e18dbd2a4714b8ffd4b30b287b6243962dd75608e86abcc63ba4efc AS builder
 
 ARG VERSION=0.0.0
 ARG COMMIT=unknown
@@ -18,7 +21,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -buildvcs
     -o /out/mailgun-passport ./cmd/mailgun-passport
 
 # Runtime stage: static binary, CA certificates, non-root user (65532), no shell.
-FROM gcr.io/distroless/static-debian13:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99
 
 ARG VERSION=0.0.0
 LABEL org.opencontainers.image.title="mailgun-passport" \

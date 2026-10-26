@@ -67,7 +67,7 @@ The `+` suffix sorts after the release in both rpm and dpkg, so development buil
 make image                  # podman, or docker with CONTAINER=docker
 ```
 
-The Dockerfile cross-compiles in the build stage, so `--platform linux/arm64` does not need emulation. The runtime stage is `distroless/static` running as UID 65532 and listening on port 2525.
+The Dockerfile cross-compiles in the build stage, so `--platform linux/arm64` does not need emulation. The runtime stage is `distroless/static` running as UID 65532 and listening on port 2525. Both base images are pinned by digest, and Dependabot opens a pull request when a new one is published.
 
 The Quadlet unit in [contrib/podman/](contrib/podman/mailgun-passport.container) uses `localhost/mailgun-passport:latest` by default, which is what `make image` produces. Build the image as the same user that runs the unit (root for `/etc/containers/systemd/`).
 
