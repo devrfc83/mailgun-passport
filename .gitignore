@@ -2,8 +2,7 @@
 /dist/
 
 # Env files (may hold API keys)
-.env
-.env.*
+.env*
 !.env.example
 
 # IDE
