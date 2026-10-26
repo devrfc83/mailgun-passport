@@ -33,6 +33,9 @@ func TestFromEnvDefaultsAndRequired(t *testing.T) {
 	if cfg.MailgunTimeout != 30*time.Second {
 		t.Fatalf("timeout: %s", cfg.MailgunTimeout)
 	}
+	if cfg.MaxConnections != 100 {
+		t.Fatalf("max connections: %d", cfg.MaxConnections)
+	}
 	if cfg.MailgunSendMode != SendModeMIME {
 		t.Fatalf("send mode: %s", cfg.MailgunSendMode)
 	}

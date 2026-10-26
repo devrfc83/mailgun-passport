@@ -27,6 +27,7 @@ type Config struct {
 	SMTPDomain           string
 	MaxMessageBytes      int64
 	MaxRecipients        int
+	MaxConnections       int
 	ReadTimeout          time.Duration
 	WriteTimeout         time.Duration
 	SMTPUsername         string
@@ -77,6 +78,7 @@ func fromEnv() (Config, error) {
 		SMTPDomain:           e.str("SMTP_DOMAIN", "localhost"),
 		MaxMessageBytes:      e.positiveInt("SMTP_MAX_MESSAGE_BYTES", 10<<20),
 		MaxRecipients:        int(e.positiveInt("SMTP_MAX_RECIPIENTS", 50)),
+		MaxConnections:       int(e.positiveInt("SMTP_MAX_CONNECTIONS", 100)),
 		ReadTimeout:          e.duration("SMTP_READ_TIMEOUT", 30*time.Second),
 		WriteTimeout:         e.duration("SMTP_WRITE_TIMEOUT", 30*time.Second),
 		SMTPUsername:         e.str("SMTP_USERNAME", ""),

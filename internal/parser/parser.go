@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -41,9 +42,55 @@ type Message struct {
 	Raw         []byte
 }
 
+// Parse reads a message and decodes its MIME body into text, HTML and
+// attachments, as parsed mode needs.
 func Parse(mailFrom string, rcptTo []string, r io.Reader, maxBytes int64) (*Message, error) {
-	limited := io.LimitReader(r, maxBytes+1)
-	raw, err := io.ReadAll(limited)
+	raw, err := readMessage(rcptTo, r, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	env, err := enmime.ReadEnvelope(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("parse MIME: %w", err)
+	}
+
+	msg, err := newMessage(mailFrom, rcptTo, raw, env.GetHeader)
+	if err != nil {
+		return nil, err
+	}
+	msg.Text = env.Text
+	msg.HTML = env.HTML
+	for _, a := range env.Attachments {
+		msg.Attachments = append(msg.Attachments, partToAttachment(a, false))
+	}
+	for _, a := range env.Inlines {
+		msg.Attachments = append(msg.Attachments, partToAttachment(a, true))
+	}
+	if msg.Text == "" && msg.HTML == "" {
+		msg.Text = " "
+	}
+	return msg, nil
+}
+
+// ParseHeaders reads a message but decodes only its header section, so Text,
+// HTML and Attachments stay empty. That is all mime mode needs, since it
+// forwards Raw unchanged, and it avoids holding a decoded copy of every part.
+func ParseHeaders(mailFrom string, rcptTo []string, r io.Reader, maxBytes int64) (*Message, error) {
+	raw, err := readMessage(rcptTo, r, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	h, err := enmime.ReadHeader(bufio.NewReader(bytes.NewReader(raw)), ignoreErrors{})
+	if err != nil {
+		return nil, fmt.Errorf("parse header: %w", err)
+	}
+	return newMessage(mailFrom, rcptTo, raw, func(name string) string {
+		return enmime.DecodeRFC2047(h.Get(name))
+	})
+}
+
+func readMessage(rcptTo []string, r io.Reader, maxBytes int64) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read DATA: %w", err)
 	}
@@ -53,42 +100,36 @@ func Parse(mailFrom string, rcptTo []string, r io.Reader, maxBytes int64) (*Mess
 	if len(rcptTo) == 0 {
 		return nil, fmt.Errorf("message has no recipients")
 	}
+	return raw, nil
+}
 
-	env, err := enmime.ReadEnvelope(bytes.NewReader(raw))
-	if err != nil {
-		return nil, fmt.Errorf("parse MIME: %w", err)
-	}
-
+// newMessage fills the envelope and header fields; header returns a decoded
+// header value, or "" when it is missing.
+func newMessage(mailFrom string, rcptTo []string, raw []byte, header func(string) string) (*Message, error) {
 	msg := &Message{
 		MailFrom: mailFrom,
 		RcptTo:   append([]string{}, rcptTo...),
-		From:     firstNonEmpty(env.GetHeader("From"), mailFrom),
-		ReplyTo:  env.GetHeader("Reply-To"),
-		Subject:  env.GetHeader("Subject"),
-		Text:     env.Text,
-		HTML:     env.HTML,
-		Headers:  selectedHeaders(env),
+		From:     firstNonEmpty(header("From"), mailFrom),
+		ReplyTo:  header("Reply-To"),
+		Subject:  header("Subject"),
+		Headers:  selectedHeaders(header),
 		Raw:      raw,
 	}
-	msg.To, msg.Cc, msg.Bcc = splitRecipients(rcptTo,
-		splitAddresses(env.GetHeader("To")),
-		splitAddresses(env.GetHeader("Cc")))
-
-	for _, a := range env.Attachments {
-		msg.Attachments = append(msg.Attachments, partToAttachment(a, false))
-	}
-	for _, a := range env.Inlines {
-		msg.Attachments = append(msg.Attachments, partToAttachment(a, true))
-	}
-
 	if msg.From == "" {
 		return nil, fmt.Errorf("message has no sender")
 	}
-	if msg.Text == "" && msg.HTML == "" {
-		msg.Text = " "
-	}
+	msg.To, msg.Cc, msg.Bcc = splitRecipients(rcptTo,
+		splitAddresses(header("To")),
+		splitAddresses(header("Cc")))
 	return msg, nil
 }
+
+// ignoreErrors discards the warnings enmime collects about malformed header
+// lines: it skips them, as the full parse does.
+type ignoreErrors struct{}
+
+func (ignoreErrors) AddError(string, string, ...any)   {}
+func (ignoreErrors) AddWarning(string, string, ...any) {}
 
 // splitRecipients assigns every envelope recipient exactly once: to To or Cc
 // when a header names it (keeping the header's display form), otherwise to Bcc.
@@ -144,7 +185,7 @@ func partToAttachment(p *enmime.Part, inline bool) Attachment {
 	}
 }
 
-func selectedHeaders(env *enmime.Envelope) map[string]string {
+func selectedHeaders(header func(string) string) map[string]string {
 	keys := []string{
 		"Message-Id",
 		"In-Reply-To",
@@ -154,7 +195,7 @@ func selectedHeaders(env *enmime.Envelope) map[string]string {
 	}
 	out := map[string]string{}
 	for _, k := range keys {
-		if v := env.GetHeader(k); v != "" {
+		if v := header(k); v != "" {
 			out[k] = v
 		}
 	}

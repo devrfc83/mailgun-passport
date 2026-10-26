@@ -133,6 +133,58 @@ func TestInlineUsesContentID(t *testing.T) {
 	}
 }
 
+// ParseHeaders must agree with Parse on every header field, including
+// encoded words, and must not decode the body, even a malformed one.
+func TestParseHeadersMatchesParse(t *testing.T) {
+	envelope := []string{"bob@example.com", "carol@example.com", "dave@example.com", "secret@example.com"}
+	full, err := Parse("alice@example.com", envelope, strings.NewReader(simpleMail), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := ParseHeaders("alice@example.com", envelope, strings.NewReader(simpleMail), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head.From != full.From || head.Subject != full.Subject || head.ReplyTo != full.ReplyTo ||
+		strings.Join(head.To, ",") != strings.Join(full.To, ",") ||
+		strings.Join(head.Cc, ",") != strings.Join(full.Cc, ",") ||
+		strings.Join(head.Bcc, ",") != strings.Join(full.Bcc, ",") ||
+		head.Headers["Message-Id"] != full.Headers["Message-Id"] {
+		t.Fatalf("header fields differ:\nheaders only: %+v\nfull: %+v", head, full)
+	}
+	if head.Text != "" || head.HTML != "" || len(head.Attachments) != 0 {
+		t.Fatalf("body was decoded: %+v", head)
+	}
+	if string(head.Raw) != simpleMail {
+		t.Fatal("raw message changed")
+	}
+
+	raw := "From: =?UTF-8?Q?Jos=C3=A9?= <jose@example.com>\r\n" +
+		"Subject: =?UTF-8?Q?Ol=C3=A1?=\r\n" +
+		"Content-Type: multipart/mixed\r\n" +
+		"\r\n" +
+		"no boundary, so a full parse fails\r\n"
+	msg, err := ParseHeaders("", []string{"b@example.com"}, strings.NewReader(raw), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.From != "José <jose@example.com>" || msg.Subject != "Olá" {
+		t.Fatalf("from: %q subject: %q", msg.From, msg.Subject)
+	}
+}
+
+func TestParseHeadersChecks(t *testing.T) {
+	if _, err := ParseHeaders("a@b.c", []string{"d@e.f"}, strings.NewReader("Subject: x\n\n0123456789"), 8); err == nil {
+		t.Fatal("expected size error")
+	}
+	if _, err := ParseHeaders("a@b.c", nil, strings.NewReader(simpleMail), 1<<20); err == nil {
+		t.Fatal("expected error without envelope recipients")
+	}
+	if _, err := ParseHeaders("", []string{"d@e.f"}, strings.NewReader("Subject: x\n\nbody\n"), 1<<20); err == nil {
+		t.Fatal("expected error without a sender")
+	}
+}
+
 func TestStripHeader(t *testing.T) {
 	raw := "From: a@example.com\r\n" +
 		"Bcc: hidden@example.com,\r\n" +

@@ -64,15 +64,18 @@ func New(cfg config.Config, sender Sender, log *slog.Logger) (*Server, error) {
 }
 
 func (s *Server) ListenAndServe() error {
-	s.log.Info("listening on SMTP", "addr", s.cfg.Listen, "domain", s.cfg.SMTPDomain,
-		"auth", s.cfg.AuthRequired(), "starttls", s.cfg.TLSCertFile != "",
-		"senders", senderSummary(s.cfg.AllowedSenderDomains))
-	return s.smtp.ListenAndServe()
+	l, err := net.Listen("tcp", s.cfg.Listen)
+	if err != nil {
+		return err
+	}
+	return s.Serve(l)
 }
 
 func (s *Server) Serve(l net.Listener) error {
-	s.log.Info("listening on SMTP", "addr", l.Addr().String(), "domain", s.cfg.SMTPDomain)
-	return s.smtp.Serve(l)
+	s.log.Info("listening on SMTP", "addr", l.Addr().String(), "domain", s.cfg.SMTPDomain,
+		"auth", s.cfg.AuthRequired(), "starttls", s.cfg.TLSCertFile != "",
+		"senders", senderSummary(s.cfg.AllowedSenderDomains), "max_connections", s.cfg.MaxConnections)
+	return s.smtp.Serve(newLimitListener(l, s.cfg.MaxConnections, s.log))
 }
 
 func (s *Server) Close() error {
@@ -201,7 +204,11 @@ func (s *session) Data(r io.Reader) error {
 	rcpts := append([]string{}, s.rcptTo...)
 	s.mu.Unlock()
 
-	msg, err := parser.Parse(from, rcpts, r, s.server.cfg.MaxMessageBytes)
+	parse := parser.Parse
+	if s.server.cfg.MailgunSendMode == config.SendModeMIME {
+		parse = parser.ParseHeaders
+	}
+	msg, err := parse(from, rcpts, r, s.server.cfg.MaxMessageBytes)
 	if err != nil {
 		s.server.log.Warn("failed to parse message", "err", err)
 		// go-smtp reports its own failures while reading DATA, such as

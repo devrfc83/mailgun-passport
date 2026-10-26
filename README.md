@@ -31,6 +31,7 @@ Mailgun Passport is for the cases where that does not work or is not wanted:
 | `401`, `403`, `404` (bad key or domain) | `451 4.4.0` | retry later; the operator must fix the configuration |
 | other `4xx` (e.g. invalid address) | `554 5.0.0` | permanent failure, do not retry |
 | message larger than `SMTP_MAX_MESSAGE_BYTES` | `552 5.3.4` | permanent failure, do not retry |
+| `SMTP_MAX_CONNECTIONS` sessions already open | `421 4.7.0` instead of the greeting | retry later |
 
 ## Security model
 
@@ -130,6 +131,7 @@ The same file may be read by systemd, by Docker or Podman, or by the relay itsel
 | `SMTP_ALLOWED_SENDER_DOMAINS` | organization of `MAILGUN_DOMAIN` | Comma-separated sender domains; `*.example.com` matches subdomains, `*` allows any sender |
 | `SMTP_MAX_MESSAGE_BYTES` | `10485760` | Maximum message size |
 | `SMTP_MAX_RECIPIENTS` | `50` | Maximum recipients per message |
+| `SMTP_MAX_CONNECTIONS` | `100` | Maximum simultaneous SMTP sessions; further connections get `421` |
 | `SMTP_READ_TIMEOUT` / `SMTP_WRITE_TIMEOUT` | `30s` | Per-command timeouts |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `LOG_FILE` | empty | Also log to this file. Logs always go to stderr. |

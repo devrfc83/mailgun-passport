@@ -239,6 +239,66 @@ func TestDeliveryErrorCodes(t *testing.T) {
 	}
 }
 
+func TestMIMEModeSkipsBodyDecoding(t *testing.T) {
+	cfg := baseConfig()
+	cfg.MailgunSendMode = config.SendModeMIME
+	sender := &fakeSender{}
+	addr := startServer(t, cfg, sender)
+
+	if err := smtp.SendMail(addr, nil, "alice@example.com", []string{"bob@example.com"}, testMessage); err != nil {
+		t.Fatal(err)
+	}
+	msgs := sender.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("messages: %d", len(msgs))
+	}
+	if msgs[0].Subject != "Ping" || msgs[0].Text != "" || string(msgs[0].Raw) != string(testMessage) {
+		t.Fatalf("message: %+v", msgs[0])
+	}
+}
+
+func TestConnectionLimit(t *testing.T) {
+	cfg := baseConfig()
+	cfg.MaxConnections = 1
+	addr := startServer(t, cfg, &fakeSender{})
+
+	first, err := textproto.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := first.ReadResponse(220); err != nil {
+		t.Fatalf("first greeting: %v", err)
+	}
+
+	second, err := textproto.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if code, _, _ := second.ReadResponse(0); code != 421 {
+		t.Fatalf("second connection: code %d, want 421", code)
+	}
+
+	// Closing the first session frees its slot.
+	_ = first.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		third, err := textproto.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code, _, _ := third.ReadResponse(0)
+		_ = third.Close()
+		if code == 220 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("slot not released: code %d", code)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestSecretEqual(t *testing.T) {
 	if !secretEqual("abc", "abc") || secretEqual("abc", "abd") || secretEqual("abc", "abcd") {
 		t.Fatal("secretEqual is wrong")
