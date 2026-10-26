@@ -265,3 +265,36 @@ func TestUnreachableIsTemporary(t *testing.T) {
 		t.Fatalf("expected temporary unreachable error, got %v", err)
 	}
 }
+
+func TestVerify(t *testing.T) {
+	cases := []struct {
+		status int
+		ok     bool
+		fatal  bool
+	}{
+		{http.StatusBadRequest, true, false},
+		{http.StatusUnauthorized, false, true},
+		{http.StatusForbidden, false, true},
+		{http.StatusNotFound, false, true},
+		{http.StatusInternalServerError, false, false},
+	}
+	for _, tc := range cases {
+		srv, got := fakeMailgun(t, tc.status, `{"message":"from parameter is missing"}`)
+		err := newTestClient(t, srv.URL, config.SendModeMIME).Verify(context.Background())
+		if (err == nil) != tc.ok || Fatal(err) != tc.fatal {
+			t.Fatalf("HTTP %d: err %v, fatal %v", tc.status, err, Fatal(err))
+		}
+		if got.path != "/v3/mg.example.com/messages" || got.form["o:testmode"][0] != "yes" ||
+			len(got.form) != 1 || len(got.files) != 0 {
+			t.Fatalf("HTTP %d: request %+v", tc.status, got)
+		}
+	}
+
+	// Unreachable is not a configuration error.
+	srv, _ := fakeMailgun(t, http.StatusOK, "{}")
+	srv.Close()
+	err := newTestClient(t, srv.URL, config.SendModeMIME).Verify(context.Background())
+	if err == nil || Fatal(err) {
+		t.Fatalf("unreachable: err %v, fatal %v", err, Fatal(err))
+	}
+}

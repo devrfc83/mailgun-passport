@@ -82,7 +82,7 @@ The package installs:
 | `/usr/lib/systemd/system/mailgun-passport.service` | hardened unit (`systemd-analyze security`: 1.4–1.6, "OK") |
 | `/usr/lib/sysusers.d/mailgun-passport.conf` | the `mailgun-passport` system user |
 
-The service is not enabled automatically, because it cannot run until the API key is set. Upgrades restart it only if it was already running. An invalid configuration exits with status 2, which the unit does not restart.
+The service is not enabled automatically, because it cannot run until the API key is set. Upgrades restart it only if it was already running. An invalid configuration exits with status 2, which the unit does not restart. That includes an API key, domain or region that Mailgun rejects: at startup the relay makes an empty test-mode call, which sends nothing. If Mailgun cannot be reached, it starts anyway and logs a warning.
 
 To change single settings without editing the env file, use `sudo systemctl edit mailgun-passport` and add `Environment=` lines.
 

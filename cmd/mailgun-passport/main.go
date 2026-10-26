@@ -62,14 +62,27 @@ func run() int {
 	defer closeLog()
 	log.Info("starting mailgun-passport", "version", version, "commit", commit, "mode", cfg.MailgunSendMode)
 
-	srv, err := smtpd.New(cfg, mailgunx.New(cfg, log), log)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	client := mailgunx.New(cfg, log)
+	// A wrong key or domain would otherwise only show up as 451 replies to
+	// every client. An unreachable API is not a configuration error.
+	if err := client.Verify(ctx); err == nil {
+		log.Info("Mailgun accepted the API key and domain", "domain", cfg.MailgunDomain)
+	} else if mailgunx.Fatal(err) {
+		log.Error("Mailgun rejected the API key or domain; check MAILGUN_API_KEY, "+
+			"MAILGUN_DOMAIN and MAILGUN_API_BASE", "domain", cfg.MailgunDomain, "err", err)
+		return exitConfig
+	} else {
+		log.Warn("cannot verify the Mailgun API key, starting anyway", "err", err)
+	}
+
+	srv, err := smtpd.New(cfg, client, log)
 	if err != nil {
 		log.Error("failed to create SMTP server", "err", err)
 		return exitConfig
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {

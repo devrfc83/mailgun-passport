@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -143,6 +144,38 @@ func (c *Client) Send(ctx context.Context, msg *parser.Message) error {
 		"mode", c.mode,
 	)
 	return nil
+}
+
+// Verify checks the API key and domain without sending anything: it posts a
+// message with no fields, which Mailgun rejects with 400 once the key and
+// domain are accepted. Unlike the domains API, this works with sending keys
+// limited to one domain. Test mode guards against it ever being delivered.
+func (c *Client) Verify(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	form := &formData{}
+	form.field("o:testmode", "yes")
+	var resp struct{}
+	err := c.post(ctx, "messages", form, &resp)
+	var e *Error
+	if errors.As(err, &e) && e.Status == http.StatusBadRequest {
+		return nil
+	}
+	return err
+}
+
+// Fatal reports whether err from Verify means the configuration is wrong,
+// rather than Mailgun being unreachable or having trouble.
+func Fatal(err error) bool {
+	var e *Error
+	if !errors.As(err, &e) {
+		return false
+	}
+	switch e.Status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+		return true
+	}
+	return false
 }
 
 func (c *Client) parsedFields(form *formData, msg *parser.Message) error {
