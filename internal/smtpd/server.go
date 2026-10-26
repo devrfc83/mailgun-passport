@@ -10,15 +10,15 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/emersion/go-sasl"
 	"github.com/emersion/go-smtp"
 
-	"mailgun-passport/internal/config"
-	"mailgun-passport/internal/parser"
+	"github.com/devrfc83/mailgun-passport/internal/config"
+	"github.com/devrfc83/mailgun-passport/internal/parser"
 )
 
 const maxAuthFailures = 3
@@ -65,7 +65,8 @@ func New(cfg config.Config, sender Sender, log *slog.Logger) (*Server, error) {
 
 func (s *Server) ListenAndServe() error {
 	s.log.Info("listening on SMTP", "addr", s.cfg.Listen, "domain", s.cfg.SMTPDomain,
-		"auth", s.cfg.AuthRequired(), "starttls", s.cfg.TLSCertFile != "")
+		"auth", s.cfg.AuthRequired(), "starttls", s.cfg.TLSCertFile != "",
+		"senders", senderSummary(s.cfg.AllowedSenderDomains))
 	return s.smtp.ListenAndServe()
 }
 
@@ -226,14 +227,20 @@ func (s *session) Data(r io.Reader) error {
 	return nil
 }
 
+func senderSummary(domains []string) string {
+	if len(domains) == 0 {
+		return "any"
+	}
+	return strings.Join(domains, ",")
+}
+
 // checkSender enforces SMTP_ALLOWED_SENDER_DOMAINS on an address.
 func (s *session) checkSender(addr string) error {
-	allowed := s.server.cfg.AllowedSenderDomains
-	if len(allowed) == 0 {
+	if len(s.server.cfg.AllowedSenderDomains) == 0 {
 		return nil
 	}
 	domain, err := parser.AddressDomain(addr)
-	if err == nil && slices.Contains(allowed, domain) {
+	if err == nil && s.server.cfg.SenderDomainAllowed(domain) {
 		return nil
 	}
 	s.server.log.Warn("sender domain not allowed", "remote", s.remote, "sender", addr)

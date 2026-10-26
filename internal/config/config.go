@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"golang.org/x/net/publicsuffix"
 )
 
 const (
@@ -32,6 +33,8 @@ type Config struct {
 	SMTPPassword         string
 	AllowInsecureAuth    bool
 	AllowUnauthenticated bool
+	// AllowedSenderDomains holds exact domains and "*.domain" patterns for
+	// subdomains. Empty allows any sender.
 	AllowedSenderDomains []string
 	TLSCertFile          string
 	TLSKeyFile           string
@@ -79,7 +82,6 @@ func fromEnv() (Config, error) {
 		SMTPUsername:         e.str("SMTP_USERNAME", ""),
 		SMTPPassword:         e.secret("SMTP_PASSWORD"),
 		AllowUnauthenticated: e.boolean("SMTP_ALLOW_UNAUTHENTICATED", false),
-		AllowedSenderDomains: e.list("SMTP_ALLOWED_SENDER_DOMAINS"),
 		TLSCertFile:          e.str("SMTP_TLS_CERT_FILE", ""),
 		TLSKeyFile:           e.str("SMTP_TLS_KEY_FILE", ""),
 		MailgunAPIKey:        e.secret("MAILGUN_API_KEY"),
@@ -91,6 +93,8 @@ func fromEnv() (Config, error) {
 		LogLevel:             strings.ToLower(e.str("LOG_LEVEL", "info")),
 		LogFile:              e.str("LOG_FILE", ""),
 	}
+
+	cfg.AllowedSenderDomains = e.senderDomains("SMTP_ALLOWED_SENDER_DOMAINS", cfg.MailgunDomain)
 
 	loopback, err := isLoopback(cfg.Listen)
 	if err != nil {
@@ -137,6 +141,33 @@ func fromEnv() (Config, error) {
 
 func (c Config) AuthRequired() bool {
 	return c.SMTPUsername != "" || c.SMTPPassword != ""
+}
+
+// SenderDomainAllowed reports whether domain (lower case) may appear in
+// MAIL FROM and the From header.
+func (c Config) SenderDomainAllowed(domain string) bool {
+	if len(c.AllowedSenderDomains) == 0 {
+		return true
+	}
+	for _, d := range c.AllowedSenderDomains {
+		if d == domain || (strings.HasPrefix(d, "*.") && strings.HasSuffix(domain, d[1:])) {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultSenderDomains allows the organizational domain of the Mailgun
+// sending domain and its subdomains: for mg.example.com, example.com and
+// *.example.com. Those are the senders whose mail Mailgun's DKIM signature
+// aligns with under DMARC's relaxed rules.
+func defaultSenderDomains(mailgunDomain string) []string {
+	mailgunDomain = strings.ToLower(mailgunDomain)
+	org, err := publicsuffix.EffectiveTLDPlusOne(mailgunDomain)
+	if err != nil {
+		return []string{mailgunDomain}
+	}
+	return []string{org, "*." + org}
 }
 
 // isLoopback reports whether addr (host:port) only accepts local connections.
@@ -224,6 +255,30 @@ func (e *envReader) list(key string) []string {
 		}
 	}
 	return out
+}
+
+// senderDomains reads the allowed sender domains. Empty means the default
+// derived from the Mailgun domain, and "*" alone allows any sender.
+func (e *envReader) senderDomains(key, mailgunDomain string) []string {
+	list := e.list(key)
+	if len(list) == 0 {
+		if mailgunDomain == "" {
+			return nil
+		}
+		return defaultSenderDomains(mailgunDomain)
+	}
+	for _, d := range list {
+		if d == "*" {
+			if len(list) > 1 {
+				e.fail(fmt.Errorf("%s: \"*\" allows any sender and cannot be combined with domains", key))
+			}
+			return nil
+		}
+		if strings.Contains(strings.TrimPrefix(d, "*."), "*") {
+			e.fail(fmt.Errorf("%s: %q is not a domain or a *.domain pattern", key, d))
+		}
+	}
+	return list
 }
 
 func (e *envReader) boolean(key string, fallback bool) bool {

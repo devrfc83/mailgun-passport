@@ -73,6 +73,8 @@ func TestInvalidValuesAreErrors(t *testing.T) {
 		"SMTP_LISTEN":              "587",
 		"SMTP_DOMAIN":              `"mail.example.com"`,
 		"SMTP_USERNAME":            "'relay'",
+
+		"SMTP_ALLOWED_SENDER_DOMAINS": "*,example.com",
 	}
 	for key, value := range cases {
 		t.Run(key, func(t *testing.T) {
@@ -263,5 +265,66 @@ func TestSecretFileErrors(t *testing.T) {
 				t.Fatalf("expected an error containing %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestDefaultSenderDomainsFollowMailgunDomain(t *testing.T) {
+	cases := map[string]string{
+		"mg.example.com":    "example.com|*.example.com",
+		"MG.Example.COM":    "example.com|*.example.com",
+		"example.com":       "example.com|*.example.com",
+		"mg.example.co.uk":  "example.co.uk|*.example.co.uk",
+		"a.b.mg.example.cl": "example.cl|*.example.cl",
+	}
+	for mgDomain, want := range cases {
+		setRequired(t)
+		t.Setenv("MAILGUN_DOMAIN", mgDomain)
+		t.Setenv("SMTP_ALLOWED_SENDER_DOMAINS", "")
+		cfg, err := fromEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(cfg.AllowedSenderDomains, "|"); got != want {
+			t.Fatalf("%s: got %s, want %s", mgDomain, got, want)
+		}
+	}
+}
+
+func TestSenderDomainAllowed(t *testing.T) {
+	cfg := Config{AllowedSenderDomains: []string{"example.com", "*.example.com", "other.test"}}
+	cases := map[string]bool{
+		"example.com":      true,
+		"mg.example.com":   true,
+		"a.b.example.com":  true,
+		"other.test":       true,
+		"sub.other.test":   false,
+		"notexample.com":   false,
+		"example.com.evil": false,
+		"evil.test":        false,
+	}
+	for domain, want := range cases {
+		if got := cfg.SenderDomainAllowed(domain); got != want {
+			t.Fatalf("%s: got %v, want %v", domain, got, want)
+		}
+	}
+	if !(Config{}).SenderDomainAllowed("anything.test") {
+		t.Fatal("an empty list must allow any sender")
+	}
+}
+
+func TestAnySenderNeedsExplicitStar(t *testing.T) {
+	setRequired(t)
+	t.Setenv("SMTP_ALLOWED_SENDER_DOMAINS", "*")
+	cfg, err := fromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.AllowedSenderDomains) != 0 {
+		t.Fatalf("\"*\" should allow any sender: %#v", cfg.AllowedSenderDomains)
+	}
+
+	t.Setenv("SMTP_ALLOWED_SENDER_DOMAINS", "ex*ample.com")
+	if _, err := fromEnv(); err == nil || !strings.Contains(err.Error(), "not a domain") {
+		t.Fatalf("expected a pattern error, got %v", err)
 	}
 }

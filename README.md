@@ -6,6 +6,16 @@ Mailgun Passport is an independent project. It is not affiliated with or endorse
 
 To build it yourself, create packages or images, or cut a release, see [BUILD.md](BUILD.md).
 
+## When to use it
+
+Mailgun also accepts SMTP directly, at `smtp.mailgun.org` (or `smtp.eu.mailgun.org`) on ports 25, 465, 587 and 2525. Many cloud providers block only port 25, so if your host can reach one of the other ports, point the application there: it is simpler and needs nothing installed.
+
+Mailgun Passport is for the cases where that does not work or is not wanted:
+
+- The host blocks every outbound SMTP port, or only lets HTTPS out, possibly through a proxy (`HTTPS_PROXY` is honored).
+- Applications should not hold Mailgun credentials. They talk to a local relay; the API key lives in one root-only file or secret.
+- Sender domains should be restricted in one place, whatever the applications send.
+
 ## How it works
 
 - Clients submit mail over SMTP (port 587 by default, optional `AUTH PLAIN` and STARTTLS).
@@ -28,7 +38,21 @@ To build it yourself, create packages or images, or cut a release, see [BUILD.md
 - On any other address, the relay **refuses to start** without `SMTP_USERNAME`/`SMTP_PASSWORD`, so it cannot become an open relay by accident. Set `SMTP_ALLOW_UNAUTHENTICATED=true` only when a firewall or private network already restricts who can connect.
 - Plain-text `AUTH` is allowed by default only on loopback. Elsewhere, configure STARTTLS or set `SMTP_ALLOW_INSECURE_AUTH=true` explicitly.
 - After 3 failed `AUTH` attempts, the connection must reconnect. Every failure costs one second.
-- `SMTP_ALLOWED_SENDER_DOMAINS` limits which domains may appear in `MAIL FROM` and the `From` header.
+- Only senders in the Mailgun domain's organization are accepted by default, in `MAIL FROM` and in the `From` header. With `MAILGUN_DOMAIN=mg.example.com`, that is `example.com` and any `*.example.com`: the senders that Mailgun's DKIM signature aligns with under DMARC. Set `SMTP_ALLOWED_SENDER_DOMAINS` to list other domains, or to `*` to allow any sender.
+
+## Delivery, retries and duplicates
+
+Mailgun Passport keeps nothing on disk. A message is either accepted by Mailgun before the client gets `250`, or the client gets an error and still owns the message. That works well with clients that retry on `4xx`, as every MTA does. Many applications do not: a web app that sends a password reset during a Mailgun outage gets `451` and, usually, drops the message.
+
+If that matters, put a local MTA with a real queue in front of the relay. With Postfix, move the relay to another port with `SMTP_LISTEN=127.0.0.1:2525`, so Postfix can keep 587, and in `/etc/postfix/main.cf` set:
+
+```
+relayhost = [127.0.0.1]:2525
+```
+
+Applications then send to Postfix (port 25 or the `sendmail` command). Postfix queues the message and retries until the relay answers `250`, and it returns a bounce to the sender on `5xx`.
+
+A message can be delivered twice. When Mailgun accepts it but its answer does not arrive within `MAILGUN_TIMEOUT`, the client gets `451` and sends it again. No SMTP-to-HTTP relay without its own queue can avoid this.
 
 ## Install from packages
 
@@ -103,7 +127,7 @@ The same file may be read by systemd, by Docker or Podman, or by the relay itsel
 | `SMTP_ALLOW_INSECURE_AUTH` | `true` on loopback, else `false` | Allow AUTH without STARTTLS |
 | `SMTP_TLS_CERT_FILE` / `SMTP_TLS_KEY_FILE` | empty | Enable STARTTLS |
 | `SMTP_ALLOW_UNAUTHENTICATED` | `false` | Allow a non-loopback listener without AUTH |
-| `SMTP_ALLOWED_SENDER_DOMAINS` | empty (any) | Comma-separated allowed sender domains |
+| `SMTP_ALLOWED_SENDER_DOMAINS` | organization of `MAILGUN_DOMAIN` | Comma-separated sender domains; `*.example.com` matches subdomains, `*` allows any sender |
 | `SMTP_MAX_MESSAGE_BYTES` | `10485760` | Maximum message size |
 | `SMTP_MAX_RECIPIENTS` | `50` | Maximum recipients per message |
 | `SMTP_READ_TIMEOUT` / `SMTP_WRITE_TIMEOUT` | `30s` | Per-command timeouts |

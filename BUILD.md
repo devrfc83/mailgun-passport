@@ -24,6 +24,16 @@ The default port, 587, is privileged, so an unprivileged user cannot bind it. Us
 
 Set `MAILGUN_TESTMODE=true` to have Mailgun accept messages without delivering them.
 
+## Install with go install
+
+From v0.2.0 on, the module path is `github.com/devrfc83/mailgun-passport`:
+
+```bash
+go install github.com/devrfc83/mailgun-passport/cmd/mailgun-passport@latest
+```
+
+This builds only the binary. The systemd unit, the system user and the env file come with the packages (see the [README](README.md)). `mailgun-passport -version` reports the module version, without commit or build date.
+
 ## Make targets
 
 | Target | Result |

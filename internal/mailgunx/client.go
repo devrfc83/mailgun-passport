@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"mailgun-passport/internal/config"
-	"mailgun-passport/internal/parser"
+	"github.com/devrfc83/mailgun-passport/internal/config"
+	"github.com/devrfc83/mailgun-passport/internal/parser"
 )
 
 const (

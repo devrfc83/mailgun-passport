@@ -9,13 +9,14 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
 
-	"mailgun-passport/internal/config"
-	"mailgun-passport/internal/mailgunx"
-	"mailgun-passport/internal/smtpd"
+	"github.com/devrfc83/mailgun-passport/internal/config"
+	"github.com/devrfc83/mailgun-passport/internal/mailgunx"
+	"github.com/devrfc83/mailgun-passport/internal/smtpd"
 )
 
 // Set at build time with -ldflags "-X main.version=...".
@@ -35,6 +36,11 @@ const (
 func main() {
 	showVersion := flag.Bool("version", false, "print version information and exit")
 	flag.Parse()
+	// `go install …@vX.Y.Z` skips the Makefile's -ldflags but records the module version.
+	if info, ok := debug.ReadBuildInfo(); ok && version == "dev" &&
+		info.Main.Version != "" && info.Main.Version != "(devel)" {
+		version = strings.TrimPrefix(info.Main.Version, "v")
+	}
 	if *showVersion {
 		fmt.Printf("mailgun-passport %s (commit %s, built %s, %s)\n", version, commit, buildDate, runtime.Version())
 		return
