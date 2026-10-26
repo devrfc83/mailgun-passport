@@ -112,14 +112,14 @@ func (s *session) AuthMechanisms() []string {
 	if !s.server.cfg.AuthRequired() {
 		return nil
 	}
-	return []string{sasl.Plain}
+	return []string{sasl.Plain, sasl.Login}
 }
 
 func (s *session) Auth(mech string) (sasl.Server, error) {
 	if !s.server.cfg.AuthRequired() {
 		return nil, smtp.ErrAuthUnsupported
 	}
-	if mech != sasl.Plain {
+	if mech != sasl.Plain && mech != sasl.Login {
 		return nil, smtp.ErrAuthUnknownMechanism
 	}
 	if s.authFailures >= maxAuthFailures {
@@ -129,7 +129,7 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 			Message:      "too many authentication failures, reconnect later",
 		}
 	}
-	return sasl.NewPlainServer(func(_, username, password string) error {
+	check := func(username, password string) error {
 		if secretEqual(username, s.server.cfg.SMTPUsername) && secretEqual(password, s.server.cfg.SMTPPassword) {
 			s.authed = true
 			return nil
@@ -138,6 +138,12 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 		s.server.log.Warn("SMTP authentication failed", "remote", s.remote, "username", username)
 		time.Sleep(authFailureDelay)
 		return smtp.ErrAuthFailed
+	}
+	if mech == sasl.Login {
+		return &loginServer{authenticate: check}, nil
+	}
+	return sasl.NewPlainServer(func(_, username, password string) error {
+		return check(username, password)
 	}), nil
 }
 

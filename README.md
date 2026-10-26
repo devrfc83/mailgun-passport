@@ -18,7 +18,7 @@ Mailgun Passport is for the cases where that does not work or is not wanted:
 
 ## How it works
 
-- Clients submit mail over SMTP (port 587 by default, optional `AUTH PLAIN` and STARTTLS).
+- Clients submit mail over SMTP (port 587 by default, optional `AUTH PLAIN` or `AUTH LOGIN`, and STARTTLS).
 - **The SMTP envelope decides who receives the message.** Only the `RCPT TO` addresses get a copy. Addresses that appear only in the `To`/`Cc` headers do not, which is what an MTA that sends one copy per recipient expects.
 - In `mime` mode (the default), the original message goes unchanged to `POST /v3/{domain}/messages.mime`, except that the `Bcc` header is removed. Every header, the MIME structure and inline images stay intact.
 - In `parsed` mode, the message is rebuilt from its fields (From, To, Cc, Subject, text, HTML, attachments) and sent to `POST /v3/{domain}/messages`.
@@ -123,7 +123,7 @@ The same file may be read by systemd, by Docker or Podman, or by the relay itsel
 | `MAILGUN_TESTMODE` | `false` | Mailgun `o:testmode` |
 | `SMTP_LISTEN` | `127.0.0.1:587` | Listen address |
 | `SMTP_DOMAIN` | `localhost` | Name announced in the SMTP greeting |
-| `SMTP_USERNAME` / `SMTP_PASSWORD` | empty | Setting both requires `AUTH PLAIN` |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | empty | Setting both requires `AUTH PLAIN` or `AUTH LOGIN` |
 | `SMTP_PASSWORD_FILE` | — | Read the SMTP password from this file instead |
 | `SMTP_ALLOW_INSECURE_AUTH` | `true` on loopback, else `false` | Allow AUTH without STARTTLS |
 | `SMTP_TLS_CERT_FILE` / `SMTP_TLS_KEY_FILE` | empty | Enable STARTTLS. Reloaded when either file changes. |
