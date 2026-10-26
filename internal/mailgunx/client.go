@@ -4,23 +4,29 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
+	"net/url"
 	"strings"
 	"time"
-
-	"github.com/mailgun/mailgun-go/v5"
-	"github.com/mailgun/mailgun-go/v5/mtypes"
 
 	"mailgun-passport/internal/config"
 	"mailgun-passport/internal/parser"
 )
 
+const (
+	apiBaseUS = "https://api.mailgun.net"
+	apiBaseEU = "https://api.eu.mailgun.net"
+)
+
 type Client struct {
-	mg      *mailgun.Client
+	http    *http.Client
+	base    string
+	apiKey  string
 	domain  string
 	timeout time.Duration
 	mode    string
@@ -28,30 +34,29 @@ type Client struct {
 	log     *slog.Logger
 }
 
-func New(cfg config.Config, log *slog.Logger) (*Client, error) {
-	mg := mailgun.NewMailgun(cfg.MailgunAPIKey)
-	if err := applyAPIBase(mg, cfg.MailgunAPIBase); err != nil {
-		return nil, err
-	}
+func New(cfg config.Config, log *slog.Logger) *Client {
 	return &Client{
-		mg:      mg,
+		// The default transport honors HTTPS_PROXY and NO_PROXY.
+		http:    &http.Client{},
+		base:    apiBase(cfg.MailgunAPIBase),
+		apiKey:  cfg.MailgunAPIKey,
 		domain:  cfg.MailgunDomain,
 		timeout: cfg.MailgunTimeout,
 		mode:    cfg.MailgunSendMode,
 		test:    cfg.MailgunTestMode,
 		log:     log,
-	}, nil
+	}
 }
 
-func applyAPIBase(mg *mailgun.Client, base string) error {
+func apiBase(base string) string {
 	base = strings.TrimSpace(base)
 	switch strings.ToLower(base) {
-	case "", "us", "https://api.mailgun.net":
-		return nil
-	case "eu", "https://api.eu.mailgun.net":
-		return mg.SetAPIBase(mailgun.APIBaseEU)
+	case "", "us":
+		return apiBaseUS
+	case "eu":
+		return apiBaseEU
 	default:
-		return mg.SetAPIBase(strings.TrimRight(base, "/"))
+		return strings.TrimRight(base, "/")
 	}
 }
 
@@ -80,19 +85,19 @@ func (e *Error) Temporary() bool {
 	return e.Status >= 500
 }
 
-func newError(err error) *Error {
-	var apiErr *mailgun.UnexpectedResponseError
-	if !errors.As(err, &apiErr) {
-		return &Error{Reason: "Mailgun API unreachable", Err: err}
-	}
-	reason := fmt.Sprintf("Mailgun API returned HTTP %d", apiErr.Actual)
-	var body struct {
+func newHTTPError(status int, body []byte) *Error {
+	reason := fmt.Sprintf("Mailgun API returned HTTP %d", status)
+	var parsed struct {
 		Message string `json:"message"`
 	}
-	if json.Unmarshal(apiErr.Data, &body) == nil && body.Message != "" {
-		reason += ": " + sanitize(body.Message, 200)
+	if json.Unmarshal(body, &parsed) == nil && parsed.Message != "" {
+		reason += ": " + sanitize(parsed.Message, 200)
 	}
-	return &Error{Status: apiErr.Actual, Reason: reason, Err: err}
+	return &Error{
+		Status: status,
+		Reason: reason,
+		Err:    fmt.Errorf("mailgun: HTTP %d: %s", status, sanitize(string(body), 500)),
+	}
 }
 
 // sanitize keeps s on a single SMTP reply line of at most n bytes.
@@ -108,17 +113,26 @@ func (c *Client) Send(ctx context.Context, msg *parser.Message) error {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	var (
-		resp mtypes.SendMessageResponse
-		err  error
-	)
+	form := &formData{}
+	endpoint := "messages"
 	if c.mode == config.SendModeMIME {
-		resp, err = c.sendMIME(ctx, msg)
+		endpoint = "messages.mime"
+		c.mimeFields(form, msg)
 	} else {
-		resp, err = c.sendParsed(ctx, msg)
+		if err := c.parsedFields(form, msg); err != nil {
+			return &Error{Reason: "cannot encode message", Err: err}
+		}
 	}
-	if err != nil {
-		return newError(err)
+	if c.test {
+		form.field("o:testmode", "yes")
+	}
+
+	var resp struct {
+		ID      string `json:"id"`
+		Message string `json:"message"`
+	}
+	if err := c.post(ctx, endpoint, form, &resp); err != nil {
+		return err
 	}
 	c.log.Info("message accepted by Mailgun",
 		"id", resp.ID,
@@ -131,52 +145,151 @@ func (c *Client) Send(ctx context.Context, msg *parser.Message) error {
 	return nil
 }
 
-func (c *Client) sendParsed(ctx context.Context, msg *parser.Message) (mtypes.SendMessageResponse, error) {
-	m := mailgun.NewMessage(c.domain, msg.From, msg.Subject, msg.Text, msg.To...)
+func (c *Client) parsedFields(form *formData, msg *parser.Message) error {
+	form.field("from", msg.From)
+	form.field("subject", msg.Subject)
+	if msg.Text != "" {
+		form.field("text", msg.Text)
+	}
+	if msg.HTML != "" {
+		form.field("html", msg.HTML)
+	}
+	for _, to := range msg.To {
+		form.field("to", to)
+	}
 	for _, cc := range msg.Cc {
-		m.AddCC(cc)
+		form.field("cc", cc)
 	}
 	if len(msg.To) == 0 && len(msg.Cc) == 0 {
 		// The Mailgun API needs a "to" recipient. Recipient variables turn the
 		// call into a batch send, so each hidden recipient only sees itself.
+		vars := map[string]map[string]any{}
 		for _, r := range msg.Bcc {
-			if err := m.AddRecipientAndVariables(r, map[string]any{}); err != nil {
-				return mtypes.SendMessageResponse{}, err
-			}
+			form.field("to", r)
+			vars[r] = map[string]any{}
 		}
+		j, err := json.Marshal(vars)
+		if err != nil {
+			return err
+		}
+		form.field("recipient-variables", string(j))
 	} else {
 		for _, bcc := range msg.Bcc {
-			m.AddBCC(bcc)
+			form.field("bcc", bcc)
 		}
-	}
-	if msg.HTML != "" {
-		m.SetHTML(msg.HTML)
 	}
 	if msg.ReplyTo != "" {
-		m.SetReplyTo(msg.ReplyTo)
+		form.field("h:Reply-To", msg.ReplyTo)
 	}
 	for k, v := range msg.Headers {
-		m.AddHeader(k, v)
+		form.field("h:"+k, v)
 	}
 	for _, a := range msg.Attachments {
+		// Mailgun derives an inline part's Content-ID from its file name, which
+		// the parser already set; the part's Content-Type is sent explicitly so
+		// Mailgun does not have to guess it from that name.
+		field := "attachment"
 		if a.Inline {
-			m.AddReaderInline(a.Filename, io.NopCloser(bytes.NewReader(a.Data)))
-			continue
+			field = "inline"
 		}
-		m.AddBufferAttachment(a.Filename, a.Data)
+		form.file(field, a.Filename, a.ContentType, a.Data)
 	}
-	if c.test {
-		m.EnableTestMode()
-	}
-	return c.mg.Send(ctx, m)
+	return nil
 }
 
-// sendMIME forwards the message untouched (minus Bcc) to the SMTP envelope recipients.
-func (c *Client) sendMIME(ctx context.Context, msg *parser.Message) (mtypes.SendMessageResponse, error) {
-	raw := parser.StripHeader(msg.Raw, "Bcc")
-	m := mailgun.NewMIMEMessage(c.domain, io.NopCloser(bytes.NewReader(raw)), msg.RcptTo...)
-	if c.test {
-		m.EnableTestMode()
+// mimeFields forwards the message untouched (minus Bcc) to the SMTP envelope recipients.
+func (c *Client) mimeFields(form *formData, msg *parser.Message) {
+	for _, to := range msg.RcptTo {
+		form.field("to", to)
 	}
-	return c.mg.Send(ctx, m)
+	form.file("message", "message.mime", "message/rfc822", parser.StripHeader(msg.Raw, "Bcc"))
+}
+
+func (c *Client) post(ctx context.Context, endpoint string, form *formData, out any) error {
+	body, contentType, err := form.encode()
+	if err != nil {
+		return &Error{Reason: "cannot encode message", Err: err}
+	}
+	u := c.base + "/v3/" + url.PathEscape(c.domain) + "/" + endpoint
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, body)
+	if err != nil {
+		return &Error{Reason: "invalid Mailgun API URL", Err: err}
+	}
+	req.SetBasicAuth("api", c.apiKey)
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "mailgun-passport")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return &Error{Reason: "Mailgun API unreachable", Err: err}
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return newHTTPError(resp.StatusCode, data)
+	}
+	// The message is queued at this point; an odd body only costs the log its id.
+	if err == nil {
+		err = json.Unmarshal(data, out)
+	}
+	if err != nil {
+		c.log.Warn("unexpected Mailgun response body", "err", err)
+	}
+	return nil
+}
+
+// formData is a multipart/form-data body. Unlike mime/multipart's
+// CreateFormFile, file parts keep their own Content-Type.
+type formData struct {
+	fields []formField
+	files  []formFile
+}
+
+type formField struct{ name, value string }
+
+type formFile struct {
+	name, filename, contentType string
+	data                        []byte
+}
+
+func (f *formData) field(name, value string) {
+	f.fields = append(f.fields, formField{name, value})
+}
+
+func (f *formData) file(name, filename, contentType string, data []byte) {
+	f.files = append(f.files, formFile{name, filename, contentType, data})
+}
+
+var quoteEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+
+func (f *formData) encode() (*bytes.Buffer, string, error) {
+	buf := &bytes.Buffer{}
+	w := multipart.NewWriter(buf)
+	for _, fd := range f.fields {
+		if err := w.WriteField(fd.name, fd.value); err != nil {
+			return nil, "", err
+		}
+	}
+	for _, fl := range f.files {
+		h := textproto.MIMEHeader{}
+		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`,
+			quoteEscaper.Replace(fl.name), quoteEscaper.Replace(fl.filename)))
+		contentType := fl.contentType
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		h.Set("Content-Type", contentType)
+		part, err := w.CreatePart(h)
+		if err != nil {
+			return nil, "", err
+		}
+		if _, err := part.Write(fl.data); err != nil {
+			return nil, "", err
+		}
+	}
+	if err := w.Close(); err != nil {
+		return nil, "", err
+	}
+	return buf, w.FormDataContentType(), nil
 }

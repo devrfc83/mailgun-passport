@@ -71,6 +71,8 @@ func TestInvalidValuesAreErrors(t *testing.T) {
 		"MAILGUN_API_BASE":         "api.mailgun.net",
 		"LOG_LEVEL":                "verbose",
 		"SMTP_LISTEN":              "587",
+		"SMTP_DOMAIN":              `"mail.example.com"`,
+		"SMTP_USERNAME":            "'relay'",
 	}
 	for key, value := range cases {
 		t.Run(key, func(t *testing.T) {
@@ -148,13 +150,13 @@ func TestAllowedSenderDomains(t *testing.T) {
 	}
 }
 
-func TestGodotenvDoesNotOverride(t *testing.T) {
-	dir := t.TempDir()
-	t.Chdir(dir)
-	if err := os.WriteFile(".env", []byte("MAILGUN_API_KEY=from-file\nMAILGUN_DOMAIN=file.example.com\nSMTP_LISTEN=127.0.0.1:2525\n"), 0o600); err != nil {
+func TestEnvFileDoesNotOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "passport.env")
+	if err := os.WriteFile(path, []byte("MAILGUN_API_KEY=from-file\nMAILGUN_DOMAIN=file.example.com\nSMTP_LISTEN=127.0.0.1:2525\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
+	t.Setenv("PASSPORT_ENV_FILE", path)
 	t.Setenv("MAILGUN_API_KEY", "from-systemd")
 	t.Setenv("MAILGUN_DOMAIN", "mg.example.com")
 	t.Setenv("SMTP_LISTEN", "placeholder")
@@ -162,10 +164,7 @@ func TestGodotenvDoesNotOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := loadDotEnv(); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := fromEnv()
+	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +178,90 @@ func TestGodotenvDoesNotOverride(t *testing.T) {
 
 func TestExplicitEnvFileMustExist(t *testing.T) {
 	t.Setenv("PASSPORT_ENV_FILE", filepath.Join(t.TempDir(), "missing.env"))
-	if err := loadDotEnv(); err == nil {
+	if err := loadEnvFile(); err == nil {
 		t.Fatal("expected error for a missing PASSPORT_ENV_FILE")
+	}
+}
+
+func TestDotEnvIsNotReadImplicitly(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile(".env", []byte("SMTP_LISTEN=127.0.0.1:2525\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setRequired(t)
+	t.Setenv("PASSPORT_ENV_FILE", "")
+	t.Setenv("SMTP_LISTEN", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Listen != "127.0.0.1:587" {
+		t.Fatalf(".env in the working directory was read: listen %s", cfg.Listen)
+	}
+}
+
+func TestQuotedSecretIsRejectedWithoutLeaking(t *testing.T) {
+	setRequired(t)
+	t.Setenv("MAILGUN_API_KEY", `"key-very-secret"`)
+	_, err := fromEnv()
+	if err == nil || !strings.Contains(err.Error(), "MAILGUN_API_KEY: value is wrapped in quotes") {
+		t.Fatalf("expected a quote error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "very-secret") {
+		t.Fatalf("error leaks the secret: %v", err)
+	}
+}
+
+func TestSecretFromFile(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "api-key")
+	passFile := filepath.Join(dir, "smtp-password")
+	if err := os.WriteFile(keyFile, []byte("key-from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(passFile, []byte(" pass with spaces \r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MAILGUN_API_KEY", "")
+	t.Setenv("MAILGUN_DOMAIN", "mg.example.com")
+	t.Setenv("MAILGUN_API_KEY_FILE", keyFile)
+	t.Setenv("SMTP_USERNAME", "relay")
+	t.Setenv("SMTP_PASSWORD_FILE", passFile)
+
+	cfg, err := fromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MailgunAPIKey != "key-from-file" {
+		t.Fatalf("key: %q", cfg.MailgunAPIKey)
+	}
+	if cfg.SMTPPassword != " pass with spaces " {
+		t.Fatalf("password: %q", cfg.SMTPPassword)
+	}
+}
+
+func TestSecretFileErrors(t *testing.T) {
+	dir := t.TempDir()
+	empty := filepath.Join(dir, "empty")
+	if err := os.WriteFile(empty, []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]struct {
+		key, file, want string
+	}{
+		"both set":     {"key-test", empty, "both set"},
+		"missing file": {"", filepath.Join(dir, "missing"), "MAILGUN_API_KEY_FILE"},
+		"empty file":   {"", empty, "is empty"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("MAILGUN_API_KEY", tc.key)
+			t.Setenv("MAILGUN_API_KEY_FILE", tc.file)
+			if _, err := fromEnv(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected an error containing %q, got %v", tc.want, err)
+			}
+		})
 	}
 }

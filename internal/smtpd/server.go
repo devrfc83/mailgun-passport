@@ -203,6 +203,12 @@ func (s *session) Data(r io.Reader) error {
 	msg, err := parser.Parse(from, rcpts, r, s.server.cfg.MaxMessageBytes)
 	if err != nil {
 		s.server.log.Warn("failed to parse message", "err", err)
+		// go-smtp reports its own failures while reading DATA, such as
+		// 552 for a message over SMTP_MAX_MESSAGE_BYTES; pass them through.
+		var smtpErr *smtp.SMTPError
+		if errors.As(err, &smtpErr) {
+			return smtpErr
+		}
 		return &smtp.SMTPError{
 			Code:         550,
 			EnhancedCode: smtp.EnhancedCode{5, 6, 0},

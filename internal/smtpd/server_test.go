@@ -205,6 +205,22 @@ func TestAllowedSenderDomains(t *testing.T) {
 	}
 }
 
+func TestOversizeMessageIs552(t *testing.T) {
+	cfg := baseConfig()
+	cfg.MaxMessageBytes = 100
+	sender := &fakeSender{}
+	addr := startServer(t, cfg, sender)
+
+	big := []byte("Subject: x\r\n\r\n" + strings.Repeat("a", 500) + "\r\n")
+	err := smtp.SendMail(addr, nil, "alice@example.com", []string{"bob@example.com"}, big)
+	if code := smtpCode(t, err); code != 552 {
+		t.Fatalf("code %d: %v", code, err)
+	}
+	if len(sender.sent()) != 0 {
+		t.Fatal("oversize message was forwarded")
+	}
+}
+
 func TestDeliveryErrorCodes(t *testing.T) {
 	cases := []struct {
 		err  error

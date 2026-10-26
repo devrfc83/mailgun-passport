@@ -4,6 +4,8 @@ A small SMTP relay that accepts mail from local applications and delivers it thr
 
 Mailgun Passport is an independent project. It is not affiliated with or endorsed by Mailgun.
 
+To build it yourself, create packages or images, or cut a release, see [BUILD.md](BUILD.md).
+
 ## How it works
 
 - Clients submit mail over SMTP (port 587 by default, optional `AUTH PLAIN` and STARTTLS).
@@ -18,6 +20,7 @@ Mailgun Passport is an independent project. It is not affiliated with or endorse
 | unreachable, timeout, `429`, `5xx` | `451 4.4.0` | retry later |
 | `401`, `403`, `404` (bad key or domain) | `451 4.4.0` | retry later; the operator must fix the configuration |
 | other `4xx` (e.g. invalid address) | `554 5.0.0` | permanent failure, do not retry |
+| message larger than `SMTP_MAX_MESSAGE_BYTES` | `552 5.3.4` | permanent failure, do not retry |
 
 ## Security model
 
@@ -29,20 +32,18 @@ Mailgun Passport is an independent project. It is not affiliated with or endorse
 
 ## Install from packages
 
-`make packages` builds one `.rpm` and one `.deb` per architecture (`amd64`, `arm64`). The binary is static, so the same packages work on:
+Each [release](https://github.com/devrfc83/mailgun-passport/releases) has one `.rpm` and one `.deb` per architecture (`x86_64`/`amd64`, `aarch64`/`arm64`), plus `SHA256SUMS`. The binary is static, so the same packages work on:
 
 - Fedora 43 and 44
 - RHEL, AlmaLinux and Rocky Linux 8, 9 and 10
 - Debian 12 and 13
 - Ubuntu 24.04, 26.04 and 26.10
 
-`make test-packages` checks all of these in containers.
-
 ```bash
-sudo dnf install ./dist/mailgun-passport-*.x86_64.rpm     # Fedora / EL
-sudo apt install ./dist/mailgun-passport_*_amd64.deb      # Debian / Ubuntu
+sudo dnf install ./mailgun-passport-*.x86_64.rpm     # Fedora / EL
+sudo apt install ./mailgun-passport_*_amd64.deb      # Debian / Ubuntu
 
-sudoedit /etc/mailgun-passport/mailgun-passport.env      # set MAILGUN_API_KEY and MAILGUN_DOMAIN
+sudoedit /etc/mailgun-passport/mailgun-passport.env  # set MAILGUN_API_KEY and MAILGUN_DOMAIN
 sudo systemctl enable --now mailgun-passport
 journalctl -u mailgun-passport -f
 ```
@@ -60,13 +61,36 @@ The service is not enabled automatically, because it cannot run until the API ke
 
 To change single settings without editing the env file, use `sudo systemctl edit mailgun-passport` and add `Environment=` lines.
 
+`mailgun-passport -version` prints the installed version.
+
+## Run the container image
+
+Images for `linux/amd64` and `linux/arm64` are published to `ghcr.io/devrfc83/mailgun-passport` and Docker Hub, tagged `X.Y.Z`, `X.Y` and `latest`. The image is distroless, about 14 MB, and runs as a non-root user. It listens on port **2525**, because non-root processes cannot bind 587 under Podman or Kubernetes. It logs to stderr.
+
+```bash
+podman run -d --name mailgun-passport \
+  -p 127.0.0.1:587:2525 \
+  -e MAILGUN_API_KEY=key-... -e MAILGUN_DOMAIN=mg.example.com \
+  -e SMTP_USERNAME=relay -e SMTP_PASSWORD=change-me \
+  -e SMTP_ALLOW_INSECURE_AUTH=true \
+  --read-only --cap-drop=ALL \
+  ghcr.io/devrfc83/mailgun-passport:latest
+```
+
+`--env-file` works as well (see [Configuration](#configuration) for the file format). Publish the port on `127.0.0.1`, as above, unless other hosts must reach it. Docker's published ports bypass firewalld and ufw. If other containers on a private network reach the relay without AUTH, set `SMTP_ALLOW_UNAUTHENTICATED=true`.
+
+For Podman under systemd, [contrib/podman/mailgun-passport.container](contrib/podman/mailgun-passport.container) is a Quadlet unit. Set its `Image=` to `ghcr.io/devrfc83/mailgun-passport:latest` (it points at a locally built image by default), copy it to `/etc/containers/systemd/`, then run `systemctl daemon-reload && systemctl start mailgun-passport`.
+
 ## Configuration
 
-Settings come from the process environment (for example systemd's `EnvironmentFile=`). Missing ones are filled from `.env` in the working directory, or from the file named by `PASSPORT_ENV_FILE`, without overriding variables that are already set. Invalid values stop the relay with an error. They never fall back to defaults silently. [.env.example](.env.example) documents every setting.
+Settings come from the process environment: systemd's `EnvironmentFile=` for the packages, `-e`/`--env-file` for containers. If `PASSPORT_ENV_FILE` names a file, it fills in the variables that are not already set; that file must exist. No other file is read, not even a `.env` in the working directory. Invalid values stop the relay with an error. They never fall back to defaults silently. [.env.example](.env.example) documents every setting.
+
+The same file may be read by systemd, by Docker or Podman, or by the relay itself, and each one parses it a little differently. Write plain `KEY=value` lines that all of them read the same way: no quotes around values, no `$`, and no comments at the end of a line. A value wrapped in quotes stops the relay at startup, because Docker and Podman would otherwise pass the quotes on as part of the value.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `MAILGUN_API_KEY` | — | **Required** |
+| `MAILGUN_API_KEY` | — | **Required**, or `MAILGUN_API_KEY_FILE` |
+| `MAILGUN_API_KEY_FILE` | — | Read the API key from this file instead (see [Secrets in files](#secrets-in-files)) |
 | `MAILGUN_DOMAIN` | — | **Required** sending domain |
 | `MAILGUN_API_BASE` | `us` | `us`, `eu`, or a full URL |
 | `MAILGUN_SEND_MODE` | `mime` | `mime` (forward the original) or `parsed` (rebuild from fields) |
@@ -75,6 +99,7 @@ Settings come from the process environment (for example systemd's `EnvironmentFi
 | `SMTP_LISTEN` | `127.0.0.1:587` | Listen address |
 | `SMTP_DOMAIN` | `localhost` | Name announced in the SMTP greeting |
 | `SMTP_USERNAME` / `SMTP_PASSWORD` | empty | Setting both requires `AUTH PLAIN` |
+| `SMTP_PASSWORD_FILE` | — | Read the SMTP password from this file instead |
 | `SMTP_ALLOW_INSECURE_AUTH` | `true` on loopback, else `false` | Allow AUTH without STARTTLS |
 | `SMTP_TLS_CERT_FILE` / `SMTP_TLS_KEY_FILE` | empty | Enable STARTTLS |
 | `SMTP_ALLOW_UNAUTHENTICATED` | `false` | Allow a non-loopback listener without AUTH |
@@ -84,78 +109,46 @@ Settings come from the process environment (for example systemd's `EnvironmentFi
 | `SMTP_READ_TIMEOUT` / `SMTP_WRITE_TIMEOUT` | `30s` | Per-command timeouts |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `LOG_FILE` | empty | Also log to this file. Logs always go to stderr. |
-| `PASSPORT_ENV_FILE` | — | Explicit env file. It must exist. |
+| `PASSPORT_ENV_FILE` | — | Env file to read at startup. It must exist. |
 
-## Run from source
+Mailgun is reached over HTTPS, through `HTTPS_PROXY` if that variable is set.
 
-Requires Go 1.25 or newer.
+### Secrets in files
+
+`MAILGUN_API_KEY_FILE` and `SMTP_PASSWORD_FILE` name a file that holds the secret, so it does not have to sit in the environment. Only the trailing line break is removed from the file. Setting both `MAILGUN_API_KEY` and `MAILGUN_API_KEY_FILE` (or both password variables) is an error.
+
+With Podman secrets:
 
 ```bash
-cp .env.example .env        # set MAILGUN_API_KEY and MAILGUN_DOMAIN
-go run ./cmd/mailgun-passport
+printf '%s' 'key-...' | podman secret create mailgun-api-key -
+podman run -d --name mailgun-passport -p 127.0.0.1:587:2525 \
+  --secret mailgun-api-key -e MAILGUN_API_KEY_FILE=/run/secrets/mailgun-api-key \
+  -e MAILGUN_DOMAIN=mg.example.com --read-only --cap-drop=ALL \
+  ghcr.io/devrfc83/mailgun-passport:latest
+```
 
+With systemd 250 or newer (every supported distribution except RHEL/Alma/Rocky 8), `LoadCredential=` reads root-only files, such as the API key or Let's Encrypt certificates, and hands the service a private copy. The `mailgun-passport` user then needs no access to the originals. Remove `MAILGUN_API_KEY` from the env file and run `sudo systemctl edit mailgun-passport`:
+
+```ini
+[Service]
+LoadCredential=mailgun-api-key:/etc/mailgun-passport/mailgun-api-key
+Environment=MAILGUN_API_KEY_FILE=%d/mailgun-api-key
+
+# Optional: STARTTLS with certificates the service user cannot read.
+LoadCredential=tls.crt:/etc/letsencrypt/live/mail.example.com/fullchain.pem
+LoadCredential=tls.key:/etc/letsencrypt/live/mail.example.com/privkey.pem
+Environment=SMTP_TLS_CERT_FILE=%d/tls.crt SMTP_TLS_KEY_FILE=%d/tls.key
+```
+
+Credentials are copied when the service starts, so restart it after renewing the certificate, for example with `certbot renew --deploy-hook "systemctl restart mailgun-passport"`.
+
+## Send a test message
+
+With [swaks](https://jetmore.org/john/code/swaks/):
+
+```bash
 swaks --server 127.0.0.1:587 --to dest@example.com --from you@YOUR_DOMAIN \
   --header "Subject: Passport" --body "Hello"
 ```
 
-## Containers
-
-The image is distroless, about 14 MB, and runs as a non-root user. It listens on port **2525**, because non-root processes cannot bind 587 under Podman or Kubernetes. It logs to stderr.
-
-```bash
-make image                  # podman, or docker with CONTAINER=docker
-
-podman run -d --name mailgun-passport \
-  -p 127.0.0.1:587:2525 \
-  -e MAILGUN_API_KEY=key-... -e MAILGUN_DOMAIN=mg.example.com \
-  -e SMTP_USERNAME=relay -e SMTP_PASSWORD=change-me \
-  -e SMTP_ALLOW_INSECURE_AUTH=true \
-  --read-only --cap-drop=ALL \
-  mailgun-passport:latest
-```
-
-`--env-file .env` works as well. Publish the port on `127.0.0.1`, as above, unless other hosts must reach it. Docker's published ports bypass firewalld and ufw. If other containers on a private network reach the relay without AUTH, set `SMTP_ALLOW_UNAUTHENTICATED=true`.
-
-For Podman under systemd, [contrib/podman/mailgun-passport.container](contrib/podman/mailgun-passport.container) is a Quadlet unit. Copy it to `/etc/containers/systemd/`, then run `systemctl daemon-reload && systemctl start mailgun-passport`.
-
-Released images are published to `ghcr.io/devrfc83/mailgun-passport` and Docker Hub for `linux/amd64` and `linux/arm64`, tagged `X.Y.Z`, `X.Y` and `latest` (see [Releasing](#releasing)).
-
-## Building
-
-| Target | Result |
-| --- | --- |
-| `make build` | `dist/mailgun-passport` for this machine |
-| `make test` | `go vet` and the test suite with the race detector |
-| `make packages` | `.rpm` and `.deb` for `ARCHES` (default `amd64 arm64`) in `dist/` |
-| `make rpm` / `make deb` | a single package format |
-| `make container-packages` | the same packages built inside `golang:1.27`; only Podman or Docker is needed |
-| `make test-packages` | installs, checks and removes the packages in 15 distribution containers |
-| `make image` | the container image |
-
-Packages are built with [nFPM](https://nfpm.goreleaser.com), which `go run` fetches at a pinned version. No `rpmbuild`, `dpkg-buildpackage` or distribution Go toolchain is involved.
-
-Versions come from `vX.Y.Z` git tags (see [scripts/version.sh](scripts/version.sh)). A tagged commit builds `X.Y.Z`. Later commits build `X.Y.Z+N.gHASH`, plus `.dirty` with uncommitted changes, which sorts after the release in both rpm and dpkg. Override with `make packages VERSION=1.2.3`. `mailgun-passport -version` prints the embedded version.
-
-## Releasing
-
-Pushing a `vX.Y.Z` tag runs [.github/workflows/release.yml](.github/workflows/release.yml):
-
-1. `make test`
-2. `make packages` and `make test-packages`, after checking that `scripts/version.sh` matches the tag
-3. a multi-arch image (amd64 and arm64), with SBOM and provenance, pushed to GHCR and Docker Hub
-4. a GitHub release with the `.rpm` and `.deb` files and `SHA256SUMS`. It is created only after steps 2 and 3 succeed. Tags with a suffix such as `v1.0.0-rc1` become prereleases and do not move `latest`.
-
-```bash
-git tag -a v0.1.0 -m "v0.1.0"
-git push origin v0.1.0
-```
-
-One-time setup in GitHub, under Settings → Secrets and variables → Actions:
-
-| Kind | Name | Value |
-| --- | --- | --- |
-| Variable | `DOCKERHUB_NAMESPACE` | the Docker Hub organization |
-| Secret | `DOCKERHUB_TOKEN` | an organization access token with read/write access to `<namespace>/mailgun-passport` |
-| Variable | `DOCKERHUB_USERNAME` | optional. Only needed with a personal access token: the Docker Hub user that owns it. Defaults to `DOCKERHUB_NAMESPACE`. |
-
-The GHCR package is created private on the first push. Make it public under the package settings on GitHub.
+Add `--auth PLAIN --auth-user relay --auth-password change-me` when `SMTP_USERNAME`/`SMTP_PASSWORD` are set.

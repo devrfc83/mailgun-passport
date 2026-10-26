@@ -56,13 +56,7 @@ func run() int {
 	defer closeLog()
 	log.Info("starting mailgun-passport", "version", version, "commit", commit, "mode", cfg.MailgunSendMode)
 
-	client, err := mailgunx.New(cfg, log)
-	if err != nil {
-		log.Error("failed to create Mailgun client", "err", err)
-		return exitConfig
-	}
-
-	srv, err := smtpd.New(cfg, client, log)
+	srv, err := smtpd.New(cfg, mailgunx.New(cfg, log), log)
 	if err != nil {
 		log.Error("failed to create SMTP server", "err", err)
 		return exitConfig

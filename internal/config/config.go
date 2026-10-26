@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -47,29 +46,23 @@ type Config struct {
 }
 
 func Load() (Config, error) {
-	if err := loadDotEnv(); err != nil {
+	if err := loadEnvFile(); err != nil {
 		return Config{}, err
 	}
 	return fromEnv()
 }
 
-// loadDotEnv fills missing variables from a .env file. An explicit
-// PASSPORT_ENV_FILE must exist; the implicit candidates are optional.
-func loadDotEnv() error {
-	if p := strings.TrimSpace(os.Getenv("PASSPORT_ENV_FILE")); p != "" {
-		if err := godotenv.Load(p); err != nil {
-			return fmt.Errorf("PASSPORT_ENV_FILE: %w", err)
-		}
+// loadEnvFile fills missing variables from the file named by PASSPORT_ENV_FILE,
+// which must exist. No file is read implicitly: under systemd the working
+// directory is /, and a stray .env there or next to the binary would change
+// the configuration without anyone noticing.
+func loadEnvFile() error {
+	p := strings.TrimSpace(os.Getenv("PASSPORT_ENV_FILE"))
+	if p == "" {
 		return nil
 	}
-	candidates := []string{".env"}
-	if exe, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(exe), ".env"))
-	}
-	for _, path := range candidates {
-		if err := godotenv.Load(path); err == nil {
-			return nil
-		}
+	if err := godotenv.Load(p); err != nil {
+		return fmt.Errorf("PASSPORT_ENV_FILE: %w", err)
 	}
 	return nil
 }
@@ -84,12 +77,12 @@ func fromEnv() (Config, error) {
 		ReadTimeout:          e.duration("SMTP_READ_TIMEOUT", 30*time.Second),
 		WriteTimeout:         e.duration("SMTP_WRITE_TIMEOUT", 30*time.Second),
 		SMTPUsername:         e.str("SMTP_USERNAME", ""),
-		SMTPPassword:         e.str("SMTP_PASSWORD", ""),
+		SMTPPassword:         e.secret("SMTP_PASSWORD"),
 		AllowUnauthenticated: e.boolean("SMTP_ALLOW_UNAUTHENTICATED", false),
 		AllowedSenderDomains: e.list("SMTP_ALLOWED_SENDER_DOMAINS"),
 		TLSCertFile:          e.str("SMTP_TLS_CERT_FILE", ""),
 		TLSKeyFile:           e.str("SMTP_TLS_KEY_FILE", ""),
-		MailgunAPIKey:        e.str("MAILGUN_API_KEY", ""),
+		MailgunAPIKey:        e.secret("MAILGUN_API_KEY"),
 		MailgunDomain:        e.str("MAILGUN_DOMAIN", ""),
 		MailgunAPIBase:       e.str("MAILGUN_API_BASE", "us"),
 		MailgunTimeout:       e.duration("MAILGUN_TIMEOUT", 30*time.Second),
@@ -107,7 +100,7 @@ func fromEnv() (Config, error) {
 	cfg.AllowInsecureAuth = e.boolean("SMTP_ALLOW_INSECURE_AUTH", loopback)
 
 	if cfg.MailgunAPIKey == "" {
-		e.fail(errors.New("MAILGUN_API_KEY is required"))
+		e.fail(errors.New("MAILGUN_API_KEY is required (or MAILGUN_API_KEY_FILE)"))
 	}
 	if cfg.MailgunDomain == "" {
 		e.fail(errors.New("MAILGUN_DOMAIN is required"))
@@ -188,6 +181,37 @@ func (e *envReader) str(key, fallback string) string {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
 		return fallback
+	}
+	// systemd and godotenv strip quotes, but Docker and Podman --env-file keep
+	// them as part of the value: a quoted API key would fail every send.
+	// The value itself is not printed, since it may be a secret.
+	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+		e.fail(fmt.Errorf("%s: value is wrapped in quotes; remove them", key))
+	}
+	return v
+}
+
+// secret reads key from the environment or, when key_FILE is set instead,
+// from that file (container secrets, systemd credentials). Only the trailing
+// line break of the file is removed.
+func (e *envReader) secret(key string) string {
+	v := e.str(key, "")
+	path := e.str(key+"_FILE", "")
+	if path == "" {
+		return v
+	}
+	if v != "" {
+		e.fail(fmt.Errorf("%s and %s_FILE are both set; use only one", key, key))
+		return v
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		e.fail(fmt.Errorf("%s_FILE: %w", key, err))
+		return ""
+	}
+	v = strings.TrimRight(string(data), "\r\n")
+	if v == "" {
+		e.fail(fmt.Errorf("%s_FILE: %s is empty", key, path))
 	}
 	return v
 }
