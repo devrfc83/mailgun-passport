@@ -126,7 +126,7 @@ The same file may be read by systemd, by Docker or Podman, or by the relay itsel
 | `SMTP_USERNAME` / `SMTP_PASSWORD` | empty | Setting both requires `AUTH PLAIN` |
 | `SMTP_PASSWORD_FILE` | — | Read the SMTP password from this file instead |
 | `SMTP_ALLOW_INSECURE_AUTH` | `true` on loopback, else `false` | Allow AUTH without STARTTLS |
-| `SMTP_TLS_CERT_FILE` / `SMTP_TLS_KEY_FILE` | empty | Enable STARTTLS |
+| `SMTP_TLS_CERT_FILE` / `SMTP_TLS_KEY_FILE` | empty | Enable STARTTLS. Reloaded when either file changes. |
 | `SMTP_ALLOW_UNAUTHENTICATED` | `false` | Allow a non-loopback listener without AUTH |
 | `SMTP_ALLOWED_SENDER_DOMAINS` | organization of `MAILGUN_DOMAIN` | Comma-separated sender domains; `*.example.com` matches subdomains, `*` allows any sender |
 | `SMTP_MAX_MESSAGE_BYTES` | `10485760` | Maximum message size |
@@ -166,7 +166,7 @@ LoadCredential=tls.key:/etc/letsencrypt/live/mail.example.com/privkey.pem
 Environment=SMTP_TLS_CERT_FILE=%d/tls.crt SMTP_TLS_KEY_FILE=%d/tls.key
 ```
 
-Credentials are copied when the service starts, so restart it after renewing the certificate, for example with `certbot renew --deploy-hook "systemctl restart mailgun-passport"`.
+The relay reloads its certificate when `SMTP_TLS_CERT_FILE` or `SMTP_TLS_KEY_FILE` changes, so pointing them straight at a renewed certificate needs no restart. Credentials, however, are copied only when the service starts: with `LoadCredential=`, restart it after renewing, for example with `certbot renew --deploy-hook "systemctl restart mailgun-passport"`.
 
 ## Send a test message
 

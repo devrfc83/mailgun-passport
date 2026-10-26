@@ -6,7 +6,6 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -50,13 +49,13 @@ func New(cfg config.Config, sender Sender, log *slog.Logger) (*Server, error) {
 	srv.AllowInsecureAuth = cfg.AllowInsecureAuth
 	srv.EnableSMTPUTF8 = true
 	if cfg.TLSCertFile != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
+		certs, err := newCertReloader(cfg.TLSCertFile, cfg.TLSKeyFile, log)
 		if err != nil {
-			return nil, fmt.Errorf("load TLS certificate: %w", err)
+			return nil, err
 		}
 		srv.TLSConfig = &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
+			GetCertificate: certs.GetCertificate,
+			MinVersion:     tls.VersionTLS12,
 		}
 	}
 	s.smtp = srv
