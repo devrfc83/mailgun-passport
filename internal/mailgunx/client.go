@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/devrfc83/mailgun-passport/internal/config"
 	"github.com/devrfc83/mailgun-passport/internal/parser"
@@ -36,10 +37,15 @@ type Client struct {
 }
 
 func New(cfg config.Config, log *slog.Logger) *Client {
+	base := apiBase(cfg.MailgunAPIBase)
+	if strings.HasPrefix(strings.ToLower(base), "http://") {
+		log.Warn("MAILGUN_API_BASE uses plain HTTP: the API key and every message cross the network unencrypted",
+			"base", base)
+	}
 	return &Client{
 		// The default transport honors HTTPS_PROXY and NO_PROXY.
 		http:    &http.Client{},
-		base:    apiBase(cfg.MailgunAPIBase),
+		base:    base,
 		apiKey:  cfg.MailgunAPIKey,
 		domain:  cfg.MailgunDomain,
 		timeout: cfg.MailgunTimeout,
@@ -101,10 +107,14 @@ func newHTTPError(status int, body []byte) *Error {
 	}
 }
 
-// sanitize keeps s on a single SMTP reply line of at most n bytes.
+// sanitize keeps s on a single SMTP reply line of at most n bytes, cutting
+// only between UTF-8 characters.
 func sanitize(s string, n int) string {
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > n {
+		for n > 0 && !utf8.RuneStart(s[n]) {
+			n--
+		}
 		s = s[:n]
 	}
 	return s
@@ -139,10 +149,11 @@ func (c *Client) Send(ctx context.Context, msg *parser.Message) error {
 		"id", resp.ID,
 		"message", resp.Message,
 		"from", msg.From,
-		"subject", msg.Subject,
 		"recipients", len(msg.RcptTo),
 		"mode", c.mode,
 	)
+	// Subjects can carry personal data, so they stay out of info logs.
+	c.log.Debug("accepted message details", "id", resp.ID, "subject", msg.Subject)
 	return nil
 }
 

@@ -9,8 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/emersion/go-sasl"
@@ -97,10 +97,11 @@ func (b *backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 	return &session{server: b.server, remote: remote}, nil
 }
 
+// session needs no locking: go-smtp serves each connection from one
+// goroutine and calls these methods one at a time.
 type session struct {
 	server       *Server
 	remote       string
-	mu           sync.Mutex
 	authed       bool
 	authFailures int
 	mailFrom     string
@@ -121,10 +122,7 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 	if mech != sasl.Plain {
 		return nil, smtp.ErrAuthUnknownMechanism
 	}
-	s.mu.Lock()
-	failures := s.authFailures
-	s.mu.Unlock()
-	if failures >= maxAuthFailures {
+	if s.authFailures >= maxAuthFailures {
 		return nil, &smtp.SMTPError{
 			Code:         421,
 			EnhancedCode: smtp.EnhancedCode{4, 7, 0},
@@ -133,14 +131,10 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 	}
 	return sasl.NewPlainServer(func(_, username, password string) error {
 		if secretEqual(username, s.server.cfg.SMTPUsername) && secretEqual(password, s.server.cfg.SMTPPassword) {
-			s.mu.Lock()
 			s.authed = true
-			s.mu.Unlock()
 			return nil
 		}
-		s.mu.Lock()
 		s.authFailures++
-		s.mu.Unlock()
 		s.server.log.Warn("SMTP authentication failed", "remote", s.remote, "username", username)
 		time.Sleep(authFailureDelay)
 		return smtp.ErrAuthFailed
@@ -151,8 +145,6 @@ func (s *session) requireAuth() error {
 	if !s.server.cfg.AuthRequired() {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.authed {
 		return errAuthRequired
 	}
@@ -175,10 +167,8 @@ func (s *session) Mail(from string, _ *smtp.MailOptions) error {
 			return err
 		}
 	}
-	s.mu.Lock()
 	s.mailFrom = from
 	s.rcptTo = nil
-	s.mu.Unlock()
 	s.server.log.Debug("MAIL FROM", "from", from)
 	return nil
 }
@@ -187,9 +177,10 @@ func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 	if err := s.requireAuth(); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	s.rcptTo = append(s.rcptTo, to)
-	s.mu.Unlock()
+	// A repeated recipient would get one copy per RCPT TO in mime mode.
+	if !slices.ContainsFunc(s.rcptTo, func(r string) bool { return strings.EqualFold(r, to) }) {
+		s.rcptTo = append(s.rcptTo, to)
+	}
 	s.server.log.Debug("RCPT TO", "to", to)
 	return nil
 }
@@ -198,16 +189,11 @@ func (s *session) Data(r io.Reader) error {
 	if err := s.requireAuth(); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	from := s.mailFrom
-	rcpts := append([]string{}, s.rcptTo...)
-	s.mu.Unlock()
-
 	parse := parser.Parse
 	if s.server.cfg.MailgunSendMode == config.SendModeMIME {
 		parse = parser.ParseHeaders
 	}
-	msg, err := parse(from, rcpts, r, s.server.cfg.MaxMessageBytes)
+	msg, err := parse(s.mailFrom, s.rcptTo, r, s.server.cfg.MaxMessageBytes)
 	if err != nil {
 		s.server.log.Warn("failed to parse message", "err", err)
 		// go-smtp reports its own failures while reading DATA, such as
@@ -227,7 +213,8 @@ func (s *session) Data(r io.Reader) error {
 	}
 
 	if err := s.server.sender.Send(context.Background(), msg); err != nil {
-		s.server.log.Error("Mailgun rejected message", "err", err, "from", msg.From, "subject", msg.Subject)
+		s.server.log.Error("Mailgun rejected message", "err", err, "from", msg.From)
+		s.server.log.Debug("rejected message details", "subject", msg.Subject)
 		return deliveryError(err)
 	}
 	return nil
@@ -258,10 +245,8 @@ func (s *session) checkSender(addr string) error {
 }
 
 func (s *session) Reset() {
-	s.mu.Lock()
 	s.mailFrom = ""
 	s.rcptTo = nil
-	s.mu.Unlock()
 }
 
 func (s *session) Logout() error {

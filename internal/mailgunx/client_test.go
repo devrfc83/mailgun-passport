@@ -298,3 +298,30 @@ func TestVerify(t *testing.T) {
 		t.Fatalf("unreachable: err %v, fatal %v", err, Fatal(err))
 	}
 }
+
+func TestSanitizeKeepsUTF8(t *testing.T) {
+	// "é" is two bytes; cutting at 3 would keep only its first one.
+	if got := sanitize("a\né", 3); got != "a " {
+		t.Fatalf("got %q", got)
+	}
+	if got := sanitize("ééé", 5); got != "éé" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSubjectStaysOutOfInfoLogs(t *testing.T) {
+	srv, _ := fakeMailgun(t, http.StatusOK, `{"id":"<1@mg>","message":"Queued"}`)
+	var logs strings.Builder
+	c := newTestClient(t, srv.URL, config.SendModeMIME)
+	c.log = slog.New(slog.NewTextHandler(&logs, nil))
+	msg, err := parser.ParseHeaders("alice@example.com", []string{"bob@example.com"}, strings.NewReader(testMail), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Send(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "Hello") {
+		t.Fatalf("subject logged at info:\n%s", logs.String())
+	}
+}

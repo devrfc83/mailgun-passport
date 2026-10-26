@@ -257,6 +257,20 @@ func TestMIMEModeSkipsBodyDecoding(t *testing.T) {
 	}
 }
 
+func TestDuplicateRecipientsAreMerged(t *testing.T) {
+	sender := &fakeSender{}
+	addr := startServer(t, baseConfig(), sender)
+
+	rcpts := []string{"bob@example.com", "carol@example.com", "Bob@Example.com"}
+	if err := smtp.SendMail(addr, nil, "alice@example.com", rcpts, testMessage); err != nil {
+		t.Fatal(err)
+	}
+	msgs := sender.sent()
+	if len(msgs) != 1 || strings.Join(msgs[0].RcptTo, ",") != "bob@example.com,carol@example.com" {
+		t.Fatalf("rcpt: %#v", msgs[0].RcptTo)
+	}
+}
+
 func TestConnectionLimit(t *testing.T) {
 	cfg := baseConfig()
 	cfg.MaxConnections = 1
