@@ -9,6 +9,7 @@ LDFLAGS    := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.
 GOBUILD    := CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)"
 
 NFPM       ?= go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+STATICCHECK ?= go run honnef.co/go/tools/cmd/staticcheck@v0.8.2
 GO_IMAGE   ?= docker.io/library/golang:1.27
 IMAGE      ?= $(NAME)
 # Container image tags cannot contain "+".
@@ -28,7 +29,7 @@ endif
 
 export VERSION
 
-.PHONY: all help build test binaries packages rpm deb container-packages test-packages image clean _need-container FORCE
+.PHONY: all help build test lint binaries packages rpm deb container-packages test-packages image clean _need-container FORCE
 
 all: build
 
@@ -36,6 +37,7 @@ help:
 	@echo "mailgun-passport build targets:"
 	@echo "  make build               Build dist/$(NAME) for this machine"
 	@echo "  make test                Run go vet and the test suite"
+	@echo "  make lint                Run staticcheck"
 	@echo "  make packages            Build .rpm and .deb for: $(ARCHES)"
 	@echo "  make rpm | make deb      Build only one package format"
 	@echo "  make container-packages  Build packages inside $(GO_IMAGE) (needs only podman/docker)"
@@ -51,6 +53,9 @@ build:
 test:
 	go vet ./...
 	go test -race -count=1 ./...
+
+lint:
+	$(STATICCHECK) ./...
 
 binaries: $(foreach arch,$(ARCHES),$(DIST)/linux_$(arch)/$(NAME))
 

@@ -40,6 +40,7 @@ This builds only the binary. The systemd unit, the system user and the env file 
 | --- | --- |
 | `make build` | `dist/mailgun-passport` for this machine |
 | `make test` | `go vet` and the test suite with the race detector |
+| `make lint` | [staticcheck](https://staticcheck.dev), at a pinned version |
 | `make packages` | `.rpm` and `.deb` for `ARCHES` (default `amd64 arm64`) in `dist/` |
 | `make rpm` / `make deb` | a single package format |
 | `make container-packages` | the same packages built inside `golang:1.27`; only Podman or Docker is needed |
@@ -73,7 +74,7 @@ The Quadlet unit in [contrib/podman/](contrib/podman/mailgun-passport.container)
 
 ## Continuous integration
 
-[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push to `main` and every pull request: `gofmt`, `go mod tidy`, `make test`, `make build` and `govulncheck`.
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push to `main` and every pull request: `gofmt`, `go mod tidy`, `make lint`, `make test`, `make build` and `govulncheck`.
 
 ## Releasing
 
