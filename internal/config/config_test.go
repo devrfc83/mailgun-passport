@@ -42,6 +42,9 @@ func TestFromEnvDefaultsAndRequired(t *testing.T) {
 	if !cfg.AllowInsecureAuth {
 		t.Fatal("insecure AUTH should default to true on loopback")
 	}
+	if cfg.HealthListen != "" {
+		t.Fatalf("health endpoints should be off by default: %q", cfg.HealthListen)
+	}
 	if cfg.LogFile != "" {
 		t.Fatalf("log file should default to stderr only: %q", cfg.LogFile)
 	}
@@ -78,6 +81,7 @@ func TestInvalidValuesAreErrors(t *testing.T) {
 		"SMTP_USERNAME":            "'relay'",
 
 		"SMTP_ALLOWED_SENDER_DOMAINS": "*,example.com",
+		"HEALTH_LISTEN":               "8080",
 	}
 	for key, value := range cases {
 		t.Run(key, func(t *testing.T) {

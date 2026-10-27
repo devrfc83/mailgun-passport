@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -323,5 +324,51 @@ func TestSubjectStaysOutOfInfoLogs(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "Hello") {
 		t.Fatalf("subject logged at info:\n%s", logs.String())
+	}
+}
+
+func TestHealthFollowsMailgun(t *testing.T) {
+	recheckInterval = 0
+	t.Cleanup(func() { recheckInterval = 30 * time.Second })
+
+	var status atomic.Int32
+	status.Store(http.StatusServiceUnavailable)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(int(status.Load()))
+		_, _ = io.WriteString(w, `{"message":"x"}`)
+	}))
+	t.Cleanup(srv.Close)
+	c := newTestClient(t, srv.URL, config.SendModeMIME)
+	msg, err := parser.ParseHeaders("alice@example.com", []string{"bob@example.com"}, strings.NewReader(testMail), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.Health(); err != nil {
+		t.Fatalf("before any call: %v", err)
+	}
+	if c.Send(context.Background(), msg) == nil {
+		t.Fatal("expected a send error")
+	}
+	if c.Health() == nil {
+		t.Fatal("still healthy after a 503")
+	}
+
+	// Mailgun recovers with no traffic: Health's background check notices.
+	status.Store(http.StatusBadRequest)
+	deadline := time.Now().Add(2 * time.Second)
+	for c.Health() != nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("still unhealthy: %v", c.Health())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// A message Mailgun rejects for good is not a Mailgun problem.
+	if c.Send(context.Background(), msg) == nil {
+		t.Fatal("expected a send error")
+	}
+	if err := c.Health(); err != nil {
+		t.Fatalf("unhealthy after a 400: %v", err)
 	}
 }

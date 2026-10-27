@@ -21,6 +21,10 @@ CONTAINER  ?= $(notdir $(shell command -v podman 2>/dev/null || command -v docke
 ifeq ($(CONTAINER),docker)
 CONTAINER_USER := --user $(shell id -u):$(shell id -g)
 endif
+# Podman's default OCI image format drops the Dockerfile's HEALTHCHECK.
+ifeq ($(CONTAINER),podman)
+IMAGE_FORMAT := --format docker
+endif
 
 export VERSION
 
@@ -77,7 +81,7 @@ test-packages: _need-container
 	scripts/test-packages.sh "$(CONTAINER)" "$(DIST)"
 
 image: _need-container
-	$(CONTAINER) build \
+	$(CONTAINER) build $(IMAGE_FORMAT) \
 		--build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg BUILD_DATE="$(BUILD_DATE)" \
 		-t $(IMAGE):$(IMAGE_TAG) -t $(IMAGE):latest .
 

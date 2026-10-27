@@ -11,6 +11,7 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/emersion/go-sasl"
@@ -34,6 +35,8 @@ type Server struct {
 	sender Sender
 	log    *slog.Logger
 	smtp   *smtp.Server
+	// serving is true while the SMTP listener accepts connections.
+	serving atomic.Bool
 }
 
 func New(cfg config.Config, sender Sender, log *slog.Logger) (*Server, error) {
@@ -74,7 +77,14 @@ func (s *Server) Serve(l net.Listener) error {
 	s.log.Info("listening on SMTP", "addr", l.Addr().String(), "domain", s.cfg.SMTPDomain,
 		"auth", s.cfg.AuthRequired(), "starttls", s.cfg.TLSCertFile != "",
 		"senders", senderSummary(s.cfg.AllowedSenderDomains), "max_connections", s.cfg.MaxConnections)
+	s.serving.Store(true)
+	defer s.serving.Store(false)
 	return s.smtp.Serve(newLimitListener(l, s.cfg.MaxConnections, s.log))
+}
+
+// Serving reports whether the SMTP listener is accepting connections.
+func (s *Server) Serving() bool {
+	return s.serving.Load()
 }
 
 func (s *Server) Close() error {

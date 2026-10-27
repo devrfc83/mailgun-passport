@@ -19,6 +19,10 @@ PublishPort=127.0.0.1:587:2525
 ReadOnly=true
 DropCapability=ALL
 NoNewPrivileges=true
+# Runs `mailgun-passport -healthcheck` (HEALTH_LISTEN is set in the image)
+# and restarts the container when /health keeps failing.
+HealthCmd=/usr/bin/mailgun-passport -healthcheck
+HealthOnFailure=kill
 
 [Service]
 Restart=on-failure

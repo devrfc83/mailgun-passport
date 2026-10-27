@@ -47,6 +47,8 @@ type Config struct {
 	MailgunSendMode      string
 	LogLevel             string
 	LogFile              string
+	// HealthListen is the address of the HTTP health endpoints; empty disables them.
+	HealthListen string
 }
 
 func Load() (Config, error) {
@@ -94,6 +96,7 @@ func fromEnv() (Config, error) {
 		MailgunSendMode:      strings.ToLower(e.str("MAILGUN_SEND_MODE", SendModeMIME)),
 		LogLevel:             strings.ToLower(e.str("LOG_LEVEL", "info")),
 		LogFile:              e.str("LOG_FILE", ""),
+		HealthListen:         e.str("HEALTH_LISTEN", ""),
 	}
 
 	cfg.AllowedSenderDomains = e.senderDomains("SMTP_ALLOWED_SENDER_DOMAINS", cfg.MailgunDomain)
@@ -104,6 +107,12 @@ func fromEnv() (Config, error) {
 	}
 	// Plain-text AUTH is only safe by default when the socket never leaves the host.
 	cfg.AllowInsecureAuth = e.boolean("SMTP_ALLOW_INSECURE_AUTH", loopback)
+
+	if cfg.HealthListen != "" {
+		if _, _, err := net.SplitHostPort(cfg.HealthListen); err != nil {
+			e.fail(fmt.Errorf("HEALTH_LISTEN: %w", err))
+		}
+	}
 
 	if cfg.MailgunAPIKey == "" {
 		e.fail(errors.New("MAILGUN_API_KEY is required (or MAILGUN_API_KEY_FILE)"))

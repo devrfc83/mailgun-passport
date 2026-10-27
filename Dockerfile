@@ -37,5 +37,12 @@ COPY --from=builder /out/mailgun-passport /usr/bin/mailgun-passport
 ENV SMTP_LISTEN=0.0.0.0:2525
 EXPOSE 2525
 
+# /health and /ready, for HEALTHCHECK and Kubernetes probes. Nothing else is
+# served there; publish the port only if something outside must reach it.
+ENV HEALTH_LISTEN=0.0.0.0:8080
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s \
+    CMD ["/usr/bin/mailgun-passport", "-healthcheck"]
+
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/bin/mailgun-passport"]

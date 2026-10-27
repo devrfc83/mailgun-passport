@@ -106,6 +106,19 @@ podman run -d --name mailgun-passport \
 
 For Podman under systemd, [contrib/podman/mailgun-passport.container](contrib/podman/mailgun-passport.container) is a Quadlet unit. Set its `Image=` to `ghcr.io/devrfc83/mailgun-passport:latest` (it points at a locally built image by default), copy it to `/etc/containers/systemd/`, then run `systemctl daemon-reload && systemctl start mailgun-passport`.
 
+## Health checks
+
+Set `HEALTH_LISTEN` (for example `127.0.0.1:8080`) to serve two plain-text HTTP endpoints. They answer `200 ok`, or `503` with the reason:
+
+| Endpoint | `200` when |
+| --- | --- |
+| `GET /health` | the process runs and the SMTP listener accepts connections |
+| `GET /ready` | the same, and the last Mailgun call did not fail in a way that makes clients retry (unreachable, timeout, `401`/`403`/`404`, `429`, `5xx`) |
+
+`/ready` does not call Mailgun on every request. It reflects the last message sent, or the startup check. While it reports a failure, a request to it re-checks Mailgun in the background at most every 30 seconds, so it recovers even when no mail is flowing. A `503` from `/ready` means clients are getting `451` right now. Use it for alerts and load balancers, and `/health` to decide on restarts: restarting does not fix a Mailgun outage.
+
+`mailgun-passport -healthcheck` queries `/health` and exits `0` when healthy, `1` otherwise. The container image has no shell or curl, so its `HEALTHCHECK` runs this command. The image sets `HEALTH_LISTEN=0.0.0.0:8080`, so Kubernetes probes can reach port 8080 on the pod; the Quadlet unit restarts the container when `/health` keeps failing. Podman keeps a `HEALTHCHECK` only in the Docker image format: `make image` passes `--format docker`.
+
 ## Configuration
 
 Settings come from the process environment: systemd's `EnvironmentFile=` for the packages, `-e`/`--env-file` for containers. If `PASSPORT_ENV_FILE` names a file, it fills in the variables that are not already set; that file must exist. No other file is read, not even a `.env` in the working directory. Invalid values stop the relay with an error. They never fall back to defaults silently. [.env.example](.env.example) documents every setting.
@@ -135,6 +148,7 @@ The same file may be read by systemd, by Docker or Podman, or by the relay itsel
 | `SMTP_READ_TIMEOUT` / `SMTP_WRITE_TIMEOUT` | `30s` | Per-command timeouts |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `LOG_FILE` | empty | Also log to this file. Logs always go to stderr. |
+| `HEALTH_LISTEN` | empty (`0.0.0.0:8080` in the image) | Address for `/health` and `/ready`; empty disables them (see [Health checks](#health-checks)) |
 | `PASSPORT_ENV_FILE` | — | Env file to read at startup. It must exist. |
 
 Mailgun is reached over HTTPS, through `HTTPS_PROXY` if that variable is set.

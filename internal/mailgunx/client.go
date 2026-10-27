@@ -13,6 +13,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -34,6 +35,20 @@ type Client struct {
 	mode    string
 	test    bool
 	log     *slog.Logger
+	health  health
+}
+
+// recheckInterval is how often Health probes a failing Mailgun again; tests
+// shorten it.
+var recheckInterval = 30 * time.Second
+
+// health remembers whether the last API call failed in a way that makes
+// clients retry: unreachable, timeout, 401/403/404, 429 or 5xx.
+type health struct {
+	mu       sync.Mutex
+	err      error
+	lastCall time.Time
+	checking bool
 }
 
 func New(cfg config.Config, log *slog.Logger) *Client {
@@ -249,7 +264,41 @@ func (c *Client) mimeFields(form *formData, msg *parser.Message) {
 	form.file("message", "message.mime", "message/rfc822", parser.StripHeader(msg.Raw, "Bcc"))
 }
 
+// Health returns nil while Mailgun answers normally, and the last call's
+// error after a failure that makes clients retry. While it fails, Health
+// starts a background Verify at most every recheckInterval, so the state
+// recovers without waiting for the next message.
+func (c *Client) Health() error {
+	h := &c.health
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.err != nil && !h.checking && time.Since(h.lastCall) >= recheckInterval {
+		h.checking = true
+		go func() {
+			_ = c.Verify(context.Background())
+			h.mu.Lock()
+			h.checking = false
+			h.mu.Unlock()
+		}()
+	}
+	return h.err
+}
+
 func (c *Client) post(ctx context.Context, endpoint string, form *formData, out any) error {
+	err := c.do(ctx, endpoint, form, out)
+	var e *Error
+	failing := errors.As(err, &e) && e.Temporary()
+	c.health.mu.Lock()
+	c.health.lastCall = time.Now()
+	c.health.err = nil
+	if failing {
+		c.health.err = err
+	}
+	c.health.mu.Unlock()
+	return err
+}
+
+func (c *Client) do(ctx context.Context, endpoint string, form *formData, out any) error {
 	body, contentType, err := form.encode()
 	if err != nil {
 		return &Error{Reason: "cannot encode message", Err: err}

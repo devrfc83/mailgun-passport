@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
@@ -15,6 +18,7 @@ import (
 	"time"
 
 	"github.com/devrfc83/mailgun-passport/internal/config"
+	"github.com/devrfc83/mailgun-passport/internal/health"
 	"github.com/devrfc83/mailgun-passport/internal/mailgunx"
 	"github.com/devrfc83/mailgun-passport/internal/smtpd"
 )
@@ -35,6 +39,8 @@ const (
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version information and exit")
+	healthcheck := flag.Bool("healthcheck", false,
+		"query /health on the running relay (HEALTH_LISTEN) and exit 0 if it is healthy")
 	flag.Parse()
 	// `go install …@vX.Y.Z` skips the Makefile's -ldflags but records the module version.
 	if info, ok := debug.ReadBuildInfo(); ok && version == "dev" &&
@@ -45,7 +51,29 @@ func main() {
 		fmt.Printf("mailgun-passport %s (commit %s, built %s, %s)\n", version, commit, buildDate, runtime.Version())
 		return
 	}
+	if *healthcheck {
+		os.Exit(runHealthcheck())
+	}
 	os.Exit(run())
+}
+
+// runHealthcheck is meant for container HEALTHCHECKs: the distroless image
+// has no curl. It exits 0 when healthy and 1 otherwise, as Docker expects.
+func runHealthcheck() int {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "invalid configuration:", err)
+		return 1
+	}
+	if cfg.HealthListen == "" {
+		fmt.Fprintln(os.Stderr, "HEALTH_LISTEN is not set")
+		return 1
+	}
+	if err := health.Check(cfg.HealthListen, "/health"); err != nil {
+		fmt.Fprintln(os.Stderr, "unhealthy:", err)
+		return 1
+	}
+	return 0
 }
 
 func run() int {
@@ -82,6 +110,25 @@ func run() int {
 	if err != nil {
 		log.Error("failed to create SMTP server", "err", err)
 		return exitConfig
+	}
+
+	if cfg.HealthListen != "" {
+		hl, err := net.Listen("tcp", cfg.HealthListen)
+		if err != nil {
+			log.Error("cannot listen on HEALTH_LISTEN", "err", err)
+			return exitFailure
+		}
+		hs := &http.Server{
+			Handler:           health.Handler(srv.Serving, client.Health),
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		defer hs.Close()
+		log.Info("serving /health and /ready", "addr", hl.Addr().String())
+		go func() {
+			if err := hs.Serve(hl); !errors.Is(err, http.ErrServerClosed) {
+				log.Error("health endpoints stopped", "err", err)
+			}
+		}()
 	}
 
 	errCh := make(chan error, 1)
