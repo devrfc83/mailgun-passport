@@ -1,3 +1,5 @@
+<p align="center"><img src="logo.jpg" alt="Mailgun Passport logo" width="480"></p>
+
 # Mailgun Passport
 
 A small SMTP relay that accepts mail from local applications and delivers it through the [Mailgun](https://www.mailgun.com/) HTTP API. Use it when an application only speaks SMTP but the host cannot send outbound SMTP, which many cloud providers block.
@@ -40,7 +42,7 @@ Mailgun Passport is for the cases where that does not work or is not wanted:
 - On any other address, the relay **refuses to start** without `SMTP_USERNAME`/`SMTP_PASSWORD`, so it cannot become an open relay by accident. Set `SMTP_ALLOW_UNAUTHENTICATED=true` only when a firewall or private network already restricts who can connect.
 - Plain-text `AUTH` is allowed by default only on loopback. Elsewhere, configure STARTTLS or set `SMTP_ALLOW_INSECURE_AUTH=true` explicitly.
 - After 3 failed `AUTH` attempts, the connection must reconnect. Every failure costs one second.
-- After `SMTP_AUTH_MAX_FAILURES` (default 10) failed `AUTH` attempts from one address, on any number of connections, that address cannot authenticate until 15 minutes have passed since its last failure. IPv6 clients are counted per `/64`. Loopback clients are exempt, since every local application shares `127.0.0.1` and one with a wrong password would lock out the rest. Behind a proxy or a container port forwarder that hides client addresses, all clients share one count: raise the limit, or set it to `0` to disable it.
+- After `SMTP_AUTH_MAX_FAILURES` (default 10) failed `AUTH` attempts from one address, on any number of connections, that address cannot authenticate until 15 minutes have passed since its last failure. IPv6 clients are counted per `/64`. Loopback clients are exempt, since every local application shares `127.0.0.1` and one with a wrong password would lock out the rest. Behind a proxy, or a container's published port, clients may not appear as loopback (Docker shows the bridge gateway, rootless Podman the host's address), and they all share one count: raise the limit, or set it to `0` to disable it.
 - Only senders in the Mailgun domain's organization are accepted by default, in `MAIL FROM` and in the `From` header. With `MAILGUN_DOMAIN=mg.example.com`, that is `example.com` and any `*.example.com`: the senders that Mailgun's DKIM signature aligns with under DMARC. Set `SMTP_ALLOWED_SENDER_DOMAINS` to list other domains, or to `*` to allow any sender.
 
 ## Delivery, retries and duplicates
@@ -104,7 +106,7 @@ podman run -d --name mailgun-passport \
   ghcr.io/devrfc83/mailgun-passport:latest
 ```
 
-`--env-file` works as well (see [Configuration](#configuration) for the file format). Publish the port on `127.0.0.1`, as above, unless other hosts must reach it. Docker's published ports bypass firewalld and ufw. If other containers on a private network reach the relay without AUTH, set `SMTP_ALLOW_UNAUTHENTICATED=true`.
+For Docker and Docker Compose, including secrets and how Docker affects the AUTH limit, see [README.docker.md](README.docker.md). `--env-file` works as well (see [Configuration](#configuration) for the file format). Publish the port on `127.0.0.1`, as above, unless other hosts must reach it. Docker's published ports bypass firewalld and ufw. If other containers on a private network reach the relay without AUTH, set `SMTP_ALLOW_UNAUTHENTICATED=true`.
 
 For Podman under systemd, [contrib/podman/mailgun-passport.container](contrib/podman/mailgun-passport.container) is a Quadlet unit. Set its `Image=` to `ghcr.io/devrfc83/mailgun-passport:latest` (it points at a locally built image by default), copy it to `/etc/containers/systemd/`, then run `systemctl daemon-reload && systemctl start mailgun-passport`.
 
