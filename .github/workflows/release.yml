@@ -2,6 +2,8 @@
 #   - .rpm/.deb for amd64 and arm64, tested in 15 distribution containers,
 #     attached to a GitHub release together with SHA256SUMS
 #   - a multi-arch image (linux/amd64, linux/arm64) on GHCR and Docker Hub
+#   - release notes from the tag's section in CHANGELOG.md, checked first so a
+#     tag without notes fails before anything is published
 #
 # Repository settings required (Settings > Secrets and variables > Actions):
 #   variable DOCKERHUB_NAMESPACE  Docker Hub organization that owns the image
@@ -37,6 +39,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check that CHANGELOG.md has notes for the tag
+        run: scripts/release-notes.sh "$GITHUB_REF_NAME" > /dev/null
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -166,17 +170,27 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            CHANGELOG.md
+            scripts/release-notes.sh
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: packages
           path: dist
 
+      # The CHANGELOG.md section comes first; --generate-notes appends the
+      # "Full Changelog" link.
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          scripts/release-notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
           prerelease=""
           case "$GITHUB_REF_NAME" in *-*) prerelease=--prerelease ;; esac
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" --verify-tag $prerelease \
-            --title "$GITHUB_REF_NAME" --generate-notes
+            --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes

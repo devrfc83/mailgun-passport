@@ -80,12 +80,15 @@ The Quadlet unit in [contrib/podman/](contrib/podman/mailgun-passport.container)
 
 Pushing a `vX.Y.Z` tag runs [.github/workflows/release.yml](.github/workflows/release.yml):
 
-1. `make test`
+1. a check that [CHANGELOG.md](CHANGELOG.md) has a `## vX.Y.Z` section for the tag, then `make test`
 2. `make packages` and `make test-packages`, after checking that `scripts/version.sh` matches the tag
 3. a multi-arch image (amd64 and arm64), with SBOM and provenance, pushed to GHCR and Docker Hub
-4. a GitHub release with the `.rpm` and `.deb` files and `SHA256SUMS`. It is created only after steps 2 and 3 succeed. Tags with a suffix such as `v1.0.0-rc1` become prereleases and do not move `latest`.
+4. a GitHub release with the `.rpm` and `.deb` files and `SHA256SUMS`. Its notes are the changelog section, followed by GitHub's link to the full list of commits. It is created only after steps 2 and 3 succeed. Tags with a suffix such as `v1.0.0-rc1` become prereleases and do not move `latest`; they use the `## v1.0.0` section unless they have their own.
+
+Write the changelog section in the commit that the tag points to, and preview the notes before tagging:
 
 ```bash
+scripts/release-notes.sh v0.2.0
 git tag -a v0.2.0 -m "v0.2.0"
 git push origin v0.2.0
 ```

@@ -6,7 +6,7 @@ A small SMTP relay that accepts mail from local applications and delivers it thr
 
 Mailgun Passport is an independent project. It is not affiliated with or endorsed by Mailgun.
 
-To build it yourself, create packages or images, or cut a release, see [BUILD.md](BUILD.md).
+What changed in each version, including breaking changes, is in [CHANGELOG.md](CHANGELOG.md). To build it yourself, create packages or images, or cut a release, see [BUILD.md](BUILD.md).
 
 ## When to use it
 
