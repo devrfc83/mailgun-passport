@@ -18,7 +18,7 @@ func TestAuthLimiterBlocksAndExpires(t *testing.T) {
 	client := netip.MustParsePrefix("192.0.2.7/32")
 	other := netip.MustParsePrefix("192.0.2.8/32")
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if l.blocked(client) {
 			t.Fatalf("blocked after %d failures", i)
 		}
@@ -52,7 +52,7 @@ func TestAuthLimiterBlocksAndExpires(t *testing.T) {
 func TestAuthLimiterDisabled(t *testing.T) {
 	l := newAuthLimiter(0, nil)
 	client := netip.MustParsePrefix("192.0.2.7/32")
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		l.fail(client)
 	}
 	if l.blocked(client) {
@@ -64,7 +64,7 @@ func TestAuthLimiterSweepsExpiredClients(t *testing.T) {
 	l := newAuthLimiter(3, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	now := time.Unix(0, 0)
 	l.now = func() time.Time { return now }
-	for i := 0; i < 1024; i++ {
+	for i := range 1024 {
 		l.fail(netip.PrefixFrom(netip.AddrFrom4([4]byte{10, 0, byte(i >> 8), byte(i)}), 32))
 	}
 	now = now.Add(authBlockTime)

@@ -4,11 +4,27 @@ This document covers running from source, building binaries, packages and contai
 
 ## Requirements
 
-- Go 1.26 or newer, for everything except `make container-packages`
+- Go 1.27 or newer, for everything except `make container-packages` (see [Go version](#go-version))
 - Podman or Docker, for `make image`, `make container-packages` and `make test-packages`
 - git, since versions come from tags
 
 No `rpmbuild`, `dpkg-buildpackage` or distribution Go toolchain is involved: packages are built with [nFPM](https://nfpm.goreleaser.com), which `go run` fetches at a pinned version.
+
+### Go version
+
+The project requires the newest Go release. Go supports only its two latest releases, and the `golang.org/x/` modules drop older ones soon after: the fix for GO-2026-6860 in `golang.org/x/net` already needed Go 1.26. Staying on the newest release means a security fix never waits on a Go upgrade. Released packages and images contain a static binary, so they need no Go at all. The version matters only to those who build from source.
+
+If your `go` is older than the version in `go.mod`, it downloads the right toolchain on its own, unless `GOTOOLCHAIN=local` is set, as some distributions do. In that case install a newer Go from [go.dev/dl](https://go.dev/dl/), or use `make container-packages`, which builds inside the `golang` image.
+
+When a new Go release comes out, update these together:
+
+| File | Setting |
+| --- | --- |
+| `go.mod` | the `go` line, with `go mod edit -go=X.Y.0`, then `go fix ./...` to adopt the new idioms |
+| `.github/workflows/ci.yml` and `release.yml` | `GO_VERSION` |
+| `Dockerfile` | the `golang:X.Y` base image and its digest, which Dependabot may already have proposed |
+| `Makefile` | `GO_IMAGE`, used by `make container-packages` |
+| this file | the requirement above |
 
 ## Run from source
 
@@ -32,7 +48,7 @@ From v0.2.0 on, the module path is `github.com/devrfc83/mailgun-passport`:
 go install github.com/devrfc83/mailgun-passport/cmd/mailgun-passport@latest
 ```
 
-This builds only the binary. The systemd unit, the system user and the env file come with the packages (see the [README](README.md)). `mailgun-passport -version` reports the module version, without commit or build date.
+It needs Go 1.27 or newer, or a `go` that can download it. This builds only the binary. The systemd unit, the system user and the env file come with the packages (see the [README](README.md)). `mailgun-passport -version` reports the module version, without commit or build date.
 
 ## Make targets
 

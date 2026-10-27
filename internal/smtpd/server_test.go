@@ -89,8 +89,8 @@ var testMessage = []byte(strings.Join([]string{
 
 func smtpCode(t *testing.T, err error) int {
 	t.Helper()
-	var tpErr *textproto.Error
-	if !errors.As(err, &tpErr) {
+	tpErr, ok := errors.AsType[*textproto.Error](err)
+	if !ok {
 		t.Fatalf("expected an SMTP error reply, got %v", err)
 	}
 	return tpErr.Code
@@ -170,7 +170,7 @@ func TestAuthFailuresAreLimited(t *testing.T) {
 	plain := func(user, pass string) string {
 		return "AUTH PLAIN " + base64.StdEncoding.EncodeToString([]byte("\x00"+user+"\x00"+pass))
 	}
-	for i := 0; i < maxAuthFailures; i++ {
+	for i := range maxAuthFailures {
 		if code := cmd(plain("relay", "wrong")); code != 535 {
 			t.Fatalf("attempt %d: code %d", i+1, code)
 		}

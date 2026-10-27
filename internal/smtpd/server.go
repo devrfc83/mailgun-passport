@@ -229,8 +229,7 @@ func (s *session) Data(r io.Reader) error {
 		s.server.log.Warn("failed to parse message", "err", err)
 		// go-smtp reports its own failures while reading DATA, such as
 		// 552 for a message over SMTP_MAX_MESSAGE_BYTES; pass them through.
-		var smtpErr *smtp.SMTPError
-		if errors.As(err, &smtpErr) {
+		if smtpErr, ok := errors.AsType[*smtp.SMTPError](err); ok {
 			return smtpErr
 		}
 		return &smtp.SMTPError{
@@ -296,8 +295,8 @@ type DeliveryError interface {
 // retry later, 554 tells it the message will never be accepted. Errors of
 // unknown kind are treated as temporary so no message is dropped.
 func deliveryError(err error) *smtp.SMTPError {
-	var de DeliveryError
-	if !errors.As(err, &de) {
+	de, ok := errors.AsType[DeliveryError](err)
+	if !ok {
 		return &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 0}, Message: "error sending via Mailgun, try again later"}
 	}
 	if !de.Temporary() {

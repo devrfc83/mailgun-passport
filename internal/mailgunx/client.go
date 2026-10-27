@@ -183,8 +183,7 @@ func (c *Client) Verify(ctx context.Context) error {
 	form.field("o:testmode", "yes")
 	var resp struct{}
 	err := c.post(ctx, "messages", form, &resp)
-	var e *Error
-	if errors.As(err, &e) && e.Status == http.StatusBadRequest {
+	if e, ok := errors.AsType[*Error](err); ok && e.Status == http.StatusBadRequest {
 		return nil
 	}
 	return err
@@ -193,8 +192,8 @@ func (c *Client) Verify(ctx context.Context) error {
 // Fatal reports whether err from Verify means the configuration is wrong,
 // rather than Mailgun being unreachable or having trouble.
 func Fatal(err error) bool {
-	var e *Error
-	if !errors.As(err, &e) {
+	e, ok := errors.AsType[*Error](err)
+	if !ok {
 		return false
 	}
 	switch e.Status {
@@ -286,8 +285,8 @@ func (c *Client) Health() error {
 
 func (c *Client) post(ctx context.Context, endpoint string, form *formData, out any) error {
 	err := c.do(ctx, endpoint, form, out)
-	var e *Error
-	failing := errors.As(err, &e) && e.Temporary()
+	e, ok := errors.AsType[*Error](err)
+	failing := ok && e.Temporary()
 	c.health.mu.Lock()
 	c.health.lastCall = time.Now()
 	c.health.err = nil

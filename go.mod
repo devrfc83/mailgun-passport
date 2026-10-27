@@ -1,6 +1,6 @@
 module github.com/devrfc83/mailgun-passport
 
-go 1.26.0
+go 1.27.0
 
 require (
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6

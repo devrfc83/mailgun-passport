@@ -262,7 +262,7 @@ func (e *envReader) secret(key string) string {
 
 func (e *envReader) list(key string) []string {
 	var out []string
-	for _, item := range strings.Split(e.str(key, ""), ",") {
+	for item := range strings.SplitSeq(e.str(key, ""), ",") {
 		if item = strings.ToLower(strings.TrimSpace(item)); item != "" {
 			out = append(out, item)
 		}

@@ -34,7 +34,7 @@ Each `## vX.Y.Z` section becomes the notes of the GitHub release for that tag. T
 - Repeated `RCPT TO` addresses are merged, so `mime` mode no longer delivers two copies.
 - Values wrapped in quotes stop the relay at startup, because Docker and Podman `--env-file` would pass the quotes on as part of the value. The value itself is not logged.
 - Subjects are logged only at `debug` level, since they can carry personal data.
-- Building from source needs Go 1.26 or newer, required by the fixed `golang.org/x/net`.
+- Building from source, including `go install`, needs Go 1.27 or newer. Packages and images are not affected.
 - Startup logs list the allowed sender domains and the subject and expiry of the TLS certificate, and warn when `MAILGUN_API_BASE` uses plain `http://`.
 
 ### Fixed

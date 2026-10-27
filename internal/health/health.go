@@ -49,12 +49,17 @@ func reply(w http.ResponseWriter, status int, text string) {
 	_, _ = io.WriteString(w, text+"\n")
 }
 
-// reason prefers the short description meant for SMTP clients, which leaves
-// out Mailgun's response body.
+// clientError is a send failure with a short description meant for SMTP
+// clients, which leaves out Mailgun's response body.
+type clientError interface {
+	error
+	ClientMessage() string
+}
+
+// reason prefers the client description when err has one.
 func reason(err error) string {
-	var de interface{ ClientMessage() string }
-	if errors.As(err, &de) {
-		return de.ClientMessage()
+	if ce, ok := errors.AsType[clientError](err); ok {
+		return ce.ClientMessage()
 	}
 	return err.Error()
 }

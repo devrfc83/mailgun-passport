@@ -202,8 +202,8 @@ func TestNonJSONErrorBody(t *testing.T) {
 	c := newTestClient(t, srv.URL, config.SendModeMIME)
 
 	err := c.Send(context.Background(), parse(t, "bob@example.com"))
-	var mgErr *Error
-	if !errors.As(err, &mgErr) || mgErr.Status != http.StatusForbidden || !mgErr.Temporary() {
+	mgErr, ok := errors.AsType[*Error](err)
+	if !ok || mgErr.Status != http.StatusForbidden || !mgErr.Temporary() {
 		t.Fatalf("expected temporary 403, got %v", err)
 	}
 	if mgErr.Reason != "Mailgun API returned HTTP 403" {
@@ -242,8 +242,8 @@ func TestErrorClassification(t *testing.T) {
 		c := newTestClient(t, srv.URL, config.SendModeMIME)
 
 		err := c.Send(context.Background(), parse(t, "bob@example.com"))
-		var mgErr *Error
-		if !errors.As(err, &mgErr) {
+		mgErr, ok := errors.AsType[*Error](err)
+		if !ok {
 			t.Fatalf("%d: expected *Error, got %T %v", tc.status, err, err)
 		}
 		if mgErr.Status != tc.status || mgErr.Temporary() != tc.temporary {
@@ -261,8 +261,8 @@ func TestUnreachableIsTemporary(t *testing.T) {
 	c := newTestClient(t, srv.URL, config.SendModeMIME)
 
 	err := c.Send(context.Background(), parse(t, "bob@example.com"))
-	var mgErr *Error
-	if !errors.As(err, &mgErr) || mgErr.Status != 0 || !mgErr.Temporary() {
+	mgErr, ok := errors.AsType[*Error](err)
+	if !ok || mgErr.Status != 0 || !mgErr.Temporary() {
 		t.Fatalf("expected temporary unreachable error, got %v", err)
 	}
 }
