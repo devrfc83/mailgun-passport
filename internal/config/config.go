@@ -28,6 +28,7 @@ type Config struct {
 	MaxMessageBytes      int64
 	MaxRecipients        int
 	MaxConnections       int
+	AuthMaxFailures      int // failed AUTH attempts per client address before blocking; 0 disables
 	ReadTimeout          time.Duration
 	WriteTimeout         time.Duration
 	SMTPUsername         string
@@ -81,6 +82,7 @@ func fromEnv() (Config, error) {
 		MaxMessageBytes:      e.positiveInt("SMTP_MAX_MESSAGE_BYTES", 10<<20),
 		MaxRecipients:        int(e.positiveInt("SMTP_MAX_RECIPIENTS", 50)),
 		MaxConnections:       int(e.positiveInt("SMTP_MAX_CONNECTIONS", 100)),
+		AuthMaxFailures:      int(e.nonNegativeInt("SMTP_AUTH_MAX_FAILURES", 10)),
 		ReadTimeout:          e.duration("SMTP_READ_TIMEOUT", 30*time.Second),
 		WriteTimeout:         e.duration("SMTP_WRITE_TIMEOUT", 30*time.Second),
 		SMTPUsername:         e.str("SMTP_USERNAME", ""),
@@ -313,6 +315,19 @@ func (e *envReader) positiveInt(key string, fallback int64) int64 {
 	n, err := strconv.ParseInt(v, 10, 32)
 	if err != nil || n <= 0 {
 		e.fail(fmt.Errorf("%s: expected a positive integer, got %q", key, v))
+		return fallback
+	}
+	return n
+}
+
+func (e *envReader) nonNegativeInt(key string, fallback int64) int64 {
+	v := e.str(key, "")
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(v, 10, 32)
+	if err != nil || n < 0 {
+		e.fail(fmt.Errorf("%s: expected 0 or a positive integer, got %q", key, v))
 		return fallback
 	}
 	return n

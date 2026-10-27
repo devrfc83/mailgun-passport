@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -35,12 +36,13 @@ type Server struct {
 	sender Sender
 	log    *slog.Logger
 	smtp   *smtp.Server
+	auth   *authLimiter
 	// serving is true while the SMTP listener accepts connections.
 	serving atomic.Bool
 }
 
 func New(cfg config.Config, sender Sender, log *slog.Logger) (*Server, error) {
-	s := &Server{cfg: cfg, sender: sender, log: log}
+	s := &Server{cfg: cfg, sender: sender, log: log, auth: newAuthLimiter(cfg.AuthMaxFailures, log)}
 	be := &backend{server: s}
 	srv := smtp.NewServer(be)
 	srv.Addr = cfg.Listen
@@ -100,11 +102,12 @@ type backend struct {
 }
 
 func (b *backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
-	remote := ""
+	s := &session{server: b.server}
 	if addr := c.Conn().RemoteAddr(); addr != nil {
-		remote = addr.String()
+		s.remote = addr.String()
+		s.client, s.limited = authClient(addr)
 	}
-	return &session{server: b.server, remote: remote}, nil
+	return s, nil
 }
 
 // session needs no locking: go-smtp serves each connection from one
@@ -112,6 +115,8 @@ func (b *backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 type session struct {
 	server       *Server
 	remote       string
+	client       netip.Prefix
+	limited      bool // count AUTH failures under client
 	authed       bool
 	authFailures int
 	mailFrom     string
@@ -139,6 +144,13 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 			Message:      "too many authentication failures, reconnect later",
 		}
 	}
+	if s.limited && s.server.auth.blocked(s.client) {
+		return nil, &smtp.SMTPError{
+			Code:         421,
+			EnhancedCode: smtp.EnhancedCode{4, 7, 0},
+			Message:      "too many authentication failures from your address, try again later",
+		}
+	}
 	check := func(username, password string) error {
 		if secretEqual(username, s.server.cfg.SMTPUsername) && secretEqual(password, s.server.cfg.SMTPPassword) {
 			s.authed = true
@@ -146,6 +158,9 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 		}
 		s.authFailures++
 		s.server.log.Warn("SMTP authentication failed", "remote", s.remote, "username", username)
+		if s.limited {
+			s.server.auth.fail(s.client)
+		}
 		time.Sleep(authFailureDelay)
 		return smtp.ErrAuthFailed
 	}

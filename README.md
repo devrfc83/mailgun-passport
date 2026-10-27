@@ -32,6 +32,7 @@ Mailgun Passport is for the cases where that does not work or is not wanted:
 | other `4xx` (e.g. invalid address) | `554 5.0.0` | permanent failure, do not retry |
 | message larger than `SMTP_MAX_MESSAGE_BYTES` | `552 5.3.4` | permanent failure, do not retry |
 | `SMTP_MAX_CONNECTIONS` sessions already open | `421 4.7.0` instead of the greeting | retry later |
+| `SMTP_AUTH_MAX_FAILURES` failed `AUTH` from the client's address | `421 4.7.0` to `AUTH` | retry after 15 minutes |
 
 ## Security model
 
@@ -39,6 +40,7 @@ Mailgun Passport is for the cases where that does not work or is not wanted:
 - On any other address, the relay **refuses to start** without `SMTP_USERNAME`/`SMTP_PASSWORD`, so it cannot become an open relay by accident. Set `SMTP_ALLOW_UNAUTHENTICATED=true` only when a firewall or private network already restricts who can connect.
 - Plain-text `AUTH` is allowed by default only on loopback. Elsewhere, configure STARTTLS or set `SMTP_ALLOW_INSECURE_AUTH=true` explicitly.
 - After 3 failed `AUTH` attempts, the connection must reconnect. Every failure costs one second.
+- After `SMTP_AUTH_MAX_FAILURES` (default 10) failed `AUTH` attempts from one address, on any number of connections, that address cannot authenticate until 15 minutes have passed since its last failure. IPv6 clients are counted per `/64`. Loopback clients are exempt, since every local application shares `127.0.0.1` and one with a wrong password would lock out the rest. Behind a proxy or a container port forwarder that hides client addresses, all clients share one count: raise the limit, or set it to `0` to disable it.
 - Only senders in the Mailgun domain's organization are accepted by default, in `MAIL FROM` and in the `From` header. With `MAILGUN_DOMAIN=mg.example.com`, that is `example.com` and any `*.example.com`: the senders that Mailgun's DKIM signature aligns with under DMARC. Set `SMTP_ALLOWED_SENDER_DOMAINS` to list other domains, or to `*` to allow any sender.
 
 ## Delivery, retries and duplicates
@@ -145,6 +147,7 @@ The same file may be read by systemd, by Docker or Podman, or by the relay itsel
 | `SMTP_MAX_MESSAGE_BYTES` | `10485760` | Maximum message size |
 | `SMTP_MAX_RECIPIENTS` | `50` | Maximum recipients per message |
 | `SMTP_MAX_CONNECTIONS` | `100` | Maximum simultaneous SMTP sessions; further connections get `421` |
+| `SMTP_AUTH_MAX_FAILURES` | `10` | Failed `AUTH` attempts per client address before it is blocked for 15 minutes; `0` disables (see [Security model](#security-model)) |
 | `SMTP_READ_TIMEOUT` / `SMTP_WRITE_TIMEOUT` | `30s` | Per-command timeouts |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `LOG_FILE` | empty | Also log to this file. Logs always go to stderr. |

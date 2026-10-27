@@ -36,6 +36,9 @@ func TestFromEnvDefaultsAndRequired(t *testing.T) {
 	if cfg.MaxConnections != 100 {
 		t.Fatalf("max connections: %d", cfg.MaxConnections)
 	}
+	if cfg.AuthMaxFailures != 10 {
+		t.Fatalf("AUTH failures per address: %d", cfg.AuthMaxFailures)
+	}
 	if cfg.MailgunSendMode != SendModeMIME {
 		t.Fatalf("send mode: %s", cfg.MailgunSendMode)
 	}
@@ -82,6 +85,7 @@ func TestInvalidValuesAreErrors(t *testing.T) {
 
 		"SMTP_ALLOWED_SENDER_DOMAINS": "*,example.com",
 		"HEALTH_LISTEN":               "8080",
+		"SMTP_AUTH_MAX_FAILURES":      "-1",
 	}
 	for key, value := range cases {
 		t.Run(key, func(t *testing.T) {
@@ -92,6 +96,18 @@ func TestInvalidValuesAreErrors(t *testing.T) {
 				t.Fatalf("expected an error naming %s, got %v", key, err)
 			}
 		})
+	}
+}
+
+func TestAuthLimitCanBeDisabled(t *testing.T) {
+	setRequired(t)
+	t.Setenv("SMTP_AUTH_MAX_FAILURES", "0")
+	cfg, err := fromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthMaxFailures != 0 {
+		t.Fatalf("AUTH failures per address: %d", cfg.AuthMaxFailures)
 	}
 }
 
