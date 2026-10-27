@@ -92,6 +92,8 @@ The Quadlet unit in [contrib/podman/](contrib/podman/mailgun-passport.container)
 
 [.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push to `main` and every pull request: `gofmt`, `go mod tidy`, `make lint`, `make test`, `make build` and `govulncheck`.
 
+[Dependabot](.github/dependabot.yml) opens weekly pull requests for Go modules (all in one), the Dockerfile's base images and the GitHub Actions, so CI tests each update before it is merged. `govulncheck` checks the code against advisories published after a commit, so CI can fail on a commit that passed before. The fix is then usually the pending Dependabot pull request for Go modules, or `go get <module>@latest` and `go mod tidy`.
+
 ## Releasing
 
 Pushing a `vX.Y.Z` tag runs [.github/workflows/release.yml](.github/workflows/release.yml):
