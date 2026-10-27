@@ -34,10 +34,12 @@ Each `## vX.Y.Z` section becomes the notes of the GitHub release for that tag. T
 - Repeated `RCPT TO` addresses are merged, so `mime` mode no longer delivers two copies.
 - Values wrapped in quotes stop the relay at startup, because Docker and Podman `--env-file` would pass the quotes on as part of the value. The value itself is not logged.
 - Subjects are logged only at `debug` level, since they can carry personal data.
+- Building from source needs Go 1.26 or newer, required by the fixed `golang.org/x/net`.
 - Startup logs list the allowed sender domains and the subject and expiry of the TLS certificate, and warn when `MAILGUN_API_BASE` uses plain `http://`.
 
 ### Fixed
 
+- `golang.org/x/net` 0.62.0 and `golang.org/x/text` 0.43.0 fix GO-2026-6860, a quadratic-time case in the HTML parser that `parsed` mode reaches through enmime, and other advisories in code the relay does not call.
 - Messages over `SMTP_MAX_MESSAGE_BYTES` get `552 5.3.4` instead of `550 5.6.0`.
 - In `parsed` mode, attachments and inline parts keep their `Content-Type`. Before, Mailgun had to guess it from the file name, which failed for inline images named after their Content-ID.
 - Mailgun error text passed on in SMTP replies and logs is no longer cut in the middle of a UTF-8 character.

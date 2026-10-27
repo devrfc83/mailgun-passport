@@ -4,7 +4,7 @@ This document covers running from source, building binaries, packages and contai
 
 ## Requirements
 
-- Go 1.25 or newer, for everything except `make container-packages`
+- Go 1.26 or newer, for everything except `make container-packages`
 - Podman or Docker, for `make image`, `make container-packages` and `make test-packages`
 - git, since versions come from tags
 
