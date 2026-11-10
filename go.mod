@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
-	github.com/emersion/go-smtp v0.25.0
+	github.com/emersion/go-smtp v0.25.1
 	github.com/jhillyerd/enmime/v2 v2.5.0
 	github.com/joho/godotenv v1.5.1
 	golang.org/x/net v0.62.0
