@@ -76,3 +76,33 @@ func TestCheck(t *testing.T) {
 		t.Fatal("expected an error when nothing listens")
 	}
 }
+
+func TestMetricsEndpointIsOptIn(t *testing.T) {
+	serving := func() bool { return true }
+	ready := func() error { return nil }
+
+	rec := httptest.NewRecorder()
+	Handler(serving, ready).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("/metrics without the option: %d", rec.Code)
+	}
+
+	metrics := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("up 1\n")) })
+	h := Handler(serving, ready, WithMetrics(metrics))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "up 1\n" {
+		t.Fatalf("/metrics: %d %q", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/metrics", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /metrics: %d", rec.Code)
+	}
+	// The other endpoints are unchanged.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/ready: %d", rec.Code)
+	}
+}

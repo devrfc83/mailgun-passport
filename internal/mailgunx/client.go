@@ -12,12 +12,16 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	"github.com/devrfc83/mailgun-passport/internal/config"
+	"github.com/devrfc83/mailgun-passport/internal/metrics"
 	"github.com/devrfc83/mailgun-passport/internal/parser"
 )
 
@@ -28,14 +32,33 @@ const (
 
 type Client struct {
 	http    *http.Client
-	base    string
-	apiKey  string
-	domain  string
-	timeout time.Duration
-	mode    string
-	test    bool
+	mode    string // fixed: the SMTP side parses messages to match
 	log     *slog.Logger
+	metrics *metrics.Set
 	health  health
+	// settings holds what SIGHUP can change; see Reconfigure.
+	settings atomic.Pointer[settings]
+}
+
+// settings is the part of the configuration that Reconfigure replaces.
+type settings struct {
+	base       string
+	apiKey     string
+	domain     string
+	timeout    time.Duration
+	test       bool
+	tags       []string
+	clicks     string
+	opens      string
+	requireTLS bool
+}
+
+// Option customizes a Client.
+type Option func(*Client)
+
+// WithMetrics makes the client count its API calls in m.
+func WithMetrics(m *metrics.Set) Option {
+	return func(c *Client) { c.metrics = m }
 }
 
 // recheckInterval is how often Health probes a failing Mailgun again; tests
@@ -51,23 +74,48 @@ type health struct {
 	checking bool
 }
 
-func New(cfg config.Config, log *slog.Logger) *Client {
+func New(cfg config.Config, log *slog.Logger, opts ...Option) *Client {
+	c := &Client{
+		// The default transport honors HTTPS_PROXY and NO_PROXY.
+		http: &http.Client{},
+		mode: cfg.MailgunSendMode,
+		log:  log,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	if c.metrics == nil {
+		// Counts nothing anyone reads, but spares every call a nil check.
+		c.metrics = metrics.New("", "")
+	}
+	c.Reconfigure(cfg)
+	return c
+}
+
+// Reconfigure replaces the API key, domain, region, timeout, test mode and
+// default options with those in cfg, for the calls that start from now on.
+// The send mode cannot change: the SMTP side parses messages to match it.
+func (c *Client) Reconfigure(cfg config.Config) {
 	base := apiBase(cfg.MailgunAPIBase)
 	if strings.HasPrefix(strings.ToLower(base), "http://") {
-		log.Warn("MAILGUN_API_BASE uses plain HTTP: the API key and every message cross the network unencrypted",
+		c.log.Warn("MAILGUN_API_BASE uses plain HTTP: the API key and every message cross the network unencrypted",
 			"base", base)
 	}
-	return &Client{
-		// The default transport honors HTTPS_PROXY and NO_PROXY.
-		http:    &http.Client{},
-		base:    base,
-		apiKey:  cfg.MailgunAPIKey,
-		domain:  cfg.MailgunDomain,
-		timeout: cfg.MailgunTimeout,
-		mode:    cfg.MailgunSendMode,
-		test:    cfg.MailgunTestMode,
-		log:     log,
-	}
+	c.settings.Store(&settings{
+		base:       base,
+		apiKey:     cfg.MailgunAPIKey,
+		domain:     cfg.MailgunDomain,
+		timeout:    cfg.MailgunTimeout,
+		test:       cfg.MailgunTestMode,
+		tags:       slices.Clone(cfg.MailgunTags),
+		clicks:     cfg.MailgunTrackingClicks,
+		opens:      cfg.MailgunTrackingOpens,
+		requireTLS: cfg.MailgunRequireTLS,
+	})
+	// The last call's result describes the old key and domain.
+	c.health.mu.Lock()
+	c.health.err = nil
+	c.health.mu.Unlock()
 }
 
 func apiBase(base string) string {
@@ -136,7 +184,8 @@ func sanitize(s string, n int) string {
 }
 
 func (c *Client) Send(ctx context.Context, msg *parser.Message) error {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	cfg := c.settings.Load()
+	ctx, cancel := context.WithTimeout(ctx, cfg.timeout)
 	defer cancel()
 
 	form := &formData{}
@@ -149,7 +198,8 @@ func (c *Client) Send(ctx context.Context, msg *parser.Message) error {
 			return &Error{Reason: "cannot encode message", Err: err}
 		}
 	}
-	if c.test {
+	c.options(form, cfg, msg)
+	if cfg.test {
 		form.field("o:testmode", "yes")
 	}
 
@@ -157,7 +207,7 @@ func (c *Client) Send(ctx context.Context, msg *parser.Message) error {
 		ID      string `json:"id"`
 		Message string `json:"message"`
 	}
-	if err := c.post(ctx, endpoint, form, &resp); err != nil {
+	if err := c.post(ctx, cfg, endpoint, form, &resp); err != nil {
 		return err
 	}
 	c.log.Info("message accepted by Mailgun",
@@ -177,12 +227,13 @@ func (c *Client) Send(ctx context.Context, msg *parser.Message) error {
 // domain are accepted. Unlike the domains API, this works with sending keys
 // limited to one domain. Test mode guards against it ever being delivered.
 func (c *Client) Verify(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	cfg := c.settings.Load()
+	ctx, cancel := context.WithTimeout(ctx, cfg.timeout)
 	defer cancel()
 	form := &formData{}
 	form.field("o:testmode", "yes")
 	var resp struct{}
-	err := c.post(ctx, "messages", form, &resp)
+	err := c.post(ctx, cfg, "messages", form, &resp)
 	if e, ok := errors.AsType[*Error](err); ok && e.Status == http.StatusBadRequest {
 		return nil
 	}
@@ -283,8 +334,8 @@ func (c *Client) Health() error {
 	return h.err
 }
 
-func (c *Client) post(ctx context.Context, endpoint string, form *formData, out any) error {
-	err := c.do(ctx, endpoint, form, out)
+func (c *Client) post(ctx context.Context, cfg *settings, endpoint string, form *formData, out any) error {
+	err := c.do(ctx, cfg, endpoint, form, out)
 	e, ok := errors.AsType[*Error](err)
 	failing := ok && e.Temporary()
 	c.health.mu.Lock()
@@ -297,26 +348,30 @@ func (c *Client) post(ctx context.Context, endpoint string, form *formData, out 
 	return err
 }
 
-func (c *Client) do(ctx context.Context, endpoint string, form *formData, out any) error {
+func (c *Client) do(ctx context.Context, cfg *settings, endpoint string, form *formData, out any) error {
 	body, contentType, err := form.encode()
 	if err != nil {
 		return &Error{Reason: "cannot encode message", Err: err}
 	}
-	u := c.base + "/v3/" + url.PathEscape(c.domain) + "/" + endpoint
+	u := cfg.base + "/v3/" + url.PathEscape(cfg.domain) + "/" + endpoint
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, body)
 	if err != nil {
 		return &Error{Reason: "invalid Mailgun API URL", Err: err}
 	}
-	req.SetBasicAuth("api", c.apiKey)
+	req.SetBasicAuth("api", cfg.apiKey)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "mailgun-passport")
 
+	start := time.Now()
 	resp, err := c.http.Do(req)
+	c.metrics.MailgunDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
+		c.metrics.MailgunRequests.Inc("error")
 		return &Error{Reason: "Mailgun API unreachable", Err: err}
 	}
 	defer resp.Body.Close()
+	c.metrics.MailgunRequests.Inc(strconv.Itoa(resp.StatusCode))
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return newHTTPError(resp.StatusCode, data)

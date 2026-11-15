@@ -54,18 +54,36 @@ func newAuthLimiter(max int, log *slog.Logger) *authLimiter {
 // or the /64 an IPv6 address belongs to, since a single host usually has a
 // whole /64. ok is false for clients that are not limited.
 func authClient(addr net.Addr) (key netip.Prefix, ok bool) {
+	ip, ok := clientAddr(addr)
+	if !ok || (ip.IsLoopback() && !authLimitLoopback) {
+		return netip.Prefix{}, false
+	}
+	return prefixOf(ip)
+}
+
+// clientPrefix is authClient without the exemption for loopback clients.
+func clientPrefix(addr net.Addr) (key netip.Prefix, ok bool) {
+	ip, ok := clientAddr(addr)
+	if !ok {
+		return netip.Prefix{}, false
+	}
+	return prefixOf(ip)
+}
+
+// clientAddr returns the IP address of a TCP client; ok is false for other
+// kinds of address.
+func clientAddr(addr net.Addr) (netip.Addr, bool) {
 	tcp, isTCP := addr.(*net.TCPAddr)
 	if !isTCP {
-		return netip.Prefix{}, false
+		return netip.Addr{}, false
 	}
 	ip, valid := netip.AddrFromSlice(tcp.IP)
-	if !valid {
-		return netip.Prefix{}, false
-	}
-	ip = ip.Unmap()
-	if ip.IsLoopback() && !authLimitLoopback {
-		return netip.Prefix{}, false
-	}
+	return ip.Unmap(), valid
+}
+
+// prefixOf is the key a client is counted under: its IPv4 address, or the /64
+// of an IPv6 one.
+func prefixOf(ip netip.Addr) (netip.Prefix, bool) {
 	bits := 32
 	if ip.Is6() {
 		bits = 64

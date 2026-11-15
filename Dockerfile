@@ -19,6 +19,9 @@ COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -buildvcs=false \
     -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildDate=${BUILD_DATE}" \
     -o /out/mailgun-passport ./cmd/mailgun-passport
+# The queue directory, created here because the final image has no shell. A
+# named volume mounted there starts out owned by 65532.
+RUN mkdir -p /out/spool
 
 # Runtime stage: static binary, CA certificates, non-root user (65532), no shell.
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99
@@ -31,6 +34,7 @@ LABEL org.opencontainers.image.title="mailgun-passport" \
       org.opencontainers.image.version="${VERSION}"
 
 COPY --from=builder /out/mailgun-passport /usr/bin/mailgun-passport
+COPY --from=builder --chown=65532:65532 --chmod=0700 /out/spool /var/lib/mailgun-passport
 
 # Unprivileged port: binding 587 as non-root fails under Podman and Kubernetes.
 # Publish it as 587 on the host if needed (-p 127.0.0.1:587:2525).
@@ -43,6 +47,10 @@ ENV HEALTH_LISTEN=0.0.0.0:8080
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s \
     CMD ["/usr/bin/mailgun-passport", "-healthcheck"]
+
+# Off by default. To queue messages on disk, mount a volume and set
+# QUEUE_DIR=/var/lib/mailgun-passport (see the README).
+VOLUME ["/var/lib/mailgun-passport"]
 
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/bin/mailgun-passport"]

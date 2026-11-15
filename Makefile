@@ -10,6 +10,12 @@ GOBUILD    := CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)"
 
 NFPM       ?= go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
 STATICCHECK ?= go run honnef.co/go/tools/cmd/staticcheck@v0.8.2
+GOLANGCI   ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+# Lowest total statement coverage `make cover` accepts, in percent.
+COVER_MIN  ?= 90
+# How long `make fuzz` runs each fuzz target.
+FUZZTIME   ?= 30s
+FUZZ_TARGETS := FuzzParse FuzzParseHeaders FuzzModesAgree FuzzStripHeader FuzzAddressDomain
 GO_IMAGE   ?= docker.io/library/golang:1.27
 IMAGE      ?= $(NAME)
 # Container image tags cannot contain "+".
@@ -29,7 +35,7 @@ endif
 
 export VERSION
 
-.PHONY: all help build test lint binaries packages rpm deb container-packages test-packages image clean _need-container FORCE
+.PHONY: all help build test cover fuzz lint binaries packages rpm deb container-packages test-packages image clean _need-container FORCE
 
 all: build
 
@@ -37,7 +43,9 @@ help:
 	@echo "mailgun-passport build targets:"
 	@echo "  make build               Build dist/$(NAME) for this machine"
 	@echo "  make test                Run go vet and the test suite"
-	@echo "  make lint                Run staticcheck"
+	@echo "  make cover               Run the tests with coverage; fails below $(COVER_MIN)%"
+	@echo "  make fuzz                Fuzz the parser, $(FUZZTIME) per target (FUZZTIME=5m for longer)"
+	@echo "  make lint                Run staticcheck and golangci-lint"
 	@echo "  make packages            Build .rpm and .deb for: $(ARCHES)"
 	@echo "  make rpm | make deb      Build only one package format"
 	@echo "  make container-packages  Build packages inside $(GO_IMAGE) (needs only podman/docker)"
@@ -54,8 +62,24 @@ test:
 	go vet ./...
 	go test -race -count=1 ./...
 
+cover:
+	@mkdir -p $(DIST)
+	go test -race -count=1 -coverprofile=$(DIST)/coverage.out ./...
+	@go tool cover -func=$(DIST)/coverage.out | awk -v min=$(COVER_MIN) \
+		'/^total:/ { sub("%", "", $$3); printf "total coverage %s%% (minimum %s%%)\n", $$3, min; if ($$3 + 0 < min) exit 1 }'
+
+# Each target runs on its own: `go test -fuzz` accepts one at a time. A failing
+# input is saved under internal/parser/testdata/fuzz/ and becomes a regression
+# test: commit it with the fix.
+fuzz:
+	@for target in $(FUZZ_TARGETS); do \
+		echo "== $$target"; \
+		go test ./internal/parser -run '^$$' -fuzz "^$$target$$" -fuzztime $(FUZZTIME) || exit 1; \
+	done
+
 lint:
 	$(STATICCHECK) ./...
+	$(GOLANGCI) run ./...
 
 binaries: $(foreach arch,$(ARCHES),$(DIST)/linux_$(arch)/$(NAME))
 

@@ -49,6 +49,15 @@ func (r *certReloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, e
 	return r.cert, nil
 }
 
+// reload loads the certificate again even though its files did not change, as
+// SIGHUP asks. On error the previous certificate stays.
+func (r *certReloader) reload() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stamp = r.stat()
+	return r.load()
+}
+
 // load replaces the current certificate; on error the previous one stays.
 func (r *certReloader) load() error {
 	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)

@@ -7,6 +7,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Container]
+# A fixed name, so ExecReload below can find the container.
+ContainerName=mailgun-passport
 # Built with `make image` by the same user (root for /etc/containers/systemd).
 # Point it at a registry instead once the image is published, e.g.
 # ghcr.io/devrfc83/mailgun-passport:latest.
@@ -16,6 +18,9 @@ Image=localhost/mailgun-passport:latest
 EnvironmentFile=/etc/mailgun-passport/mailgun-passport.env
 # Only reachable from this host.
 PublishPort=127.0.0.1:587:2525
+# With QUEUE_DIR=/var/lib/mailgun-passport in the env file, keep the queue in a
+# volume, so messages survive the container being replaced. Uncomment:
+#Volume=mailgun-passport-spool.volume:/var/lib/mailgun-passport:Z
 ReadOnly=true
 DropCapability=ALL
 NoNewPrivileges=true
@@ -27,6 +32,9 @@ HealthOnFailure=kill
 [Service]
 Restart=on-failure
 RestartPreventExitStatus=2
+# systemctl reload: the relay reads *_FILE secrets again, reloads the STARTTLS
+# certificate and reopens its log file. A changed EnvironmentFile= needs a restart.
+ExecReload=/usr/bin/podman kill --signal=HUP mailgun-passport
 
 [Install]
 WantedBy=multi-user.target default.target

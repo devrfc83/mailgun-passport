@@ -2,6 +2,34 @@
 
 Each `## vX.Y.Z` section becomes the notes of the GitHub release for that tag. The release workflow fails if the section is missing.
 
+## v0.3.0
+
+### Added
+
+- **On-disk queue.** With `QUEUE_DIR` set, each message is stored on disk, flushed before the client gets `250`, and delivered to Mailgun in the background with retries (30 seconds, doubling up to 15 minutes). A Mailgun outage no longer reaches applications that do not retry on `4xx`, and queued mail survives a restart. `QUEUE_MAX_BYTES` (default 256 MiB), `QUEUE_MAX_AGE` (default 24 hours) and `QUEUE_WORKERS` (default 2) tune it. A message that Mailgun refuses for good, or that expires, moves to `QUEUE_DIR/failed/` and is logged and counted; **nobody is told by email**, and the relay never deletes those files. When the queue is full or its disk fails, clients get `451`. Off by default. See "The on-disk queue" in the README.
+- **Metrics.** `METRICS_ENABLED=true` serves `GET /metrics` in the Prometheus text format on `HEALTH_LISTEN`: messages by outcome, Mailgun calls by status with a duration histogram, SMTP connections, AUTH attempts, rate-limited messages, reloads, queue deliveries and size, and build information. Off by default. No new dependency.
+- **`SIGHUP` reloads the configuration** without dropping connections: `*_FILE` secrets and the `PASSPORT_ENV_FILE` file are read again, the STARTTLS certificate is reloaded, `LOG_FILE` is reopened (logrotate without `copytruncate`), and the settings that can change live are applied: the Mailgun key, domain, region, timeout, test mode and options, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_ALLOWED_SENDER_DOMAINS` and `LOG_LEVEL`. A new key or domain is checked with Mailgun first, and an invalid configuration is refused with the current one left running. Settings that need a restart are named in the log. Turning `AUTH` on or off needs a restart. `systemctl reload` and the Quadlet unit send it. See "Reloading the configuration".
+- `SMTP_RATE_LIMIT_PER_MINUTE` (off by default): messages per minute per client address, with a burst of the same size. Over it, `MAIL FROM` gets `451 4.7.1`.
+- Mailgun options: `MAILGUN_TAGS`, `MAILGUN_TRACKING_CLICKS`, `MAILGUN_TRACKING_OPENS` and `MAILGUN_REQUIRE_TLS` set defaults for every message, and the `X-Mailgun-Tag`, `-Track`, `-Track-Clicks`, `-Track-Opens`, `-Dkim`, `-Require-Tls`, `-Skip-Verification` and `-Variables` header fields set them per message, in both send modes. Invalid values are ignored and logged. `MAILGUN_TESTMODE` cannot be set by a header.
+- Releases are signed with Sigstore cosign, keyless: `SHA256SUMS.sigstore.json` for the packages' checksums, and the container images by digest. The README shows how to verify them.
+- [SECURITY.md](SECURITY.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+- Kubernetes manifests in `contrib/kubernetes/`: Deployment, Service and NetworkPolicy.
+
+### Container image
+
+- The image has `/var/lib/mailgun-passport`, owned by its user and declared as a `VOLUME`, for the queue: a named volume mounted there is writable even with `--read-only`.
+
+### Changed
+
+- The systemd unit has `ExecReload=` (`SIGHUP`) and `StateDirectory=mailgun-passport`, so the service can write to `/var/lib/mailgun-passport` under `ProtectSystem=strict`. systemd creates that directory when the service starts. The Quadlet unit names its container `mailgun-passport`, for `ExecReload=`.
+- `SIGHUP` used to end the process, as it does for any Go program that does not handle it. It now reloads. A terminal that closes sends `SIGHUP` to its foreground processes: run the relay as a service.
+- The `X-Mailgun-*` header fields listed above are now turned into API parameters. Applications that already set them see them take effect; before, `parsed` mode ignored them.
+
+### Development
+
+- Fuzz tests for the parser (`make fuzz`; CI runs 20 seconds per target on every change, and `fuzz.yml` ten minutes per target every Monday). Tests for `main`, the connection limit and the new code, with an end-to-end test that starts the relay against a fake Mailgun. Total coverage went from 81% to 92%, and `make cover` fails below 90%.
+- `make lint` also runs golangci-lint, configured in `.golangci.yml`, at a pinned version.
+
 ## v0.2.0
 
 ### Breaking changes

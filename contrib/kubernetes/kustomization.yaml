@@ -1,0 +1,19 @@
+# Mailgun Passport on Kubernetes (for example DigitalOcean Kubernetes):
+#
+#   kubectl create namespace mail
+#   kubectl -n mail create secret generic mailgun-passport \
+#     --from-literal=mailgun-api-key=key-... --from-literal=smtp-password="$(openssl rand -hex 24)"
+#   kubectl apply -n mail -k contrib/kubernetes
+#
+# Applications in the namespace send to mailgun-passport:587 with user "relay"
+# and that password. See contrib/kubernetes/README.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml
+images:
+  - name: ghcr.io/devrfc83/mailgun-passport
+    # Pin X.Y in production, or the digest.
+    newTag: "0.3"

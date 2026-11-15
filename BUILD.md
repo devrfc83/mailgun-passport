@@ -56,7 +56,9 @@ It needs Go 1.27 or newer, or a `go` that can download it. This builds only the 
 | --- | --- |
 | `make build` | `dist/mailgun-passport` for this machine |
 | `make test` | `go vet` and the test suite with the race detector |
-| `make lint` | [staticcheck](https://staticcheck.dev), at a pinned version |
+| `make cover` | the tests with coverage; fails when the total drops below `COVER_MIN` (default 90) |
+| `make fuzz` | fuzzes the message parser, `FUZZTIME` (default 30s) per target |
+| `make lint` | [staticcheck](https://staticcheck.dev) and [golangci-lint](https://golangci-lint.run) (configured in `.golangci.yml`), both at pinned versions |
 | `make packages` | `.rpm` and `.deb` for `ARCHES` (default `amd64 arm64`) in `dist/` |
 | `make rpm` / `make deb` | a single package format |
 | `make container-packages` | the same packages built inside `golang:1.27`; only Podman or Docker is needed |
@@ -90,7 +92,11 @@ The Quadlet unit in [contrib/podman/](contrib/podman/mailgun-passport.container)
 
 ## Continuous integration
 
-[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push to `main` and every pull request: `gofmt`, `go mod tidy`, `make lint`, `make test`, `make build` and `govulncheck`.
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push to `main` and every pull request: `gofmt`, `go mod tidy`, `make lint`, `make test`, `make cover`, `make build`, a 20-second `make fuzz` and `govulncheck`. [.github/workflows/fuzz.yml](.github/workflows/fuzz.yml) fuzzes for ten minutes per target every Monday, and on demand.
+
+### Fuzzing
+
+The parser handles whatever an SMTP client sends, so [internal/parser/fuzz_test.go](internal/parser/fuzz_test.go) checks that no input panics and that the invariants the relay relies on hold: every envelope recipient goes to exactly one of `To`, `Cc` and `Bcc`, the raw message is kept as received, `mime` and `parsed` mode read the same headers, and `StripHeader` never touches the body. Plain `go test` runs only the seeds. When a fuzz run finds a failing input, Go saves it under `internal/parser/testdata/fuzz/`; commit it together with the fix, and it becomes a regression test.
 
 [Dependabot](.github/dependabot.yml) opens weekly pull requests for Go modules (all in one), the Dockerfile's base images and the GitHub Actions, so CI tests each update before it is merged. `govulncheck` checks the code against advisories published after a commit, so CI can fail on a commit that passed before. The fix is then usually the pending Dependabot pull request for Go modules, or `go get <module>@latest` and `go mod tidy`.
 
@@ -100,8 +106,8 @@ Pushing a `vX.Y.Z` tag runs [.github/workflows/release.yml](.github/workflows/re
 
 1. a check that [CHANGELOG.md](CHANGELOG.md) has a `## vX.Y.Z` section for the tag, then `make test`
 2. `make packages` and `make test-packages`, after checking that `scripts/version.sh` matches the tag
-3. a multi-arch image (amd64 and arm64), with SBOM and provenance, pushed to GHCR and Docker Hub
-4. a GitHub release with the `.rpm` and `.deb` files and `SHA256SUMS`. Its notes are the changelog section, followed by GitHub's link to the full list of commits. It is created only after steps 2 and 3 succeed. Tags with a suffix such as `v1.0.0-rc1` become prereleases and do not move `latest`; they use the `## v1.0.0` section unless they have their own.
+3. a multi-arch image (amd64 and arm64), with SBOM and provenance, pushed to GHCR and Docker Hub, and signed by digest with cosign
+4. a GitHub release with the `.rpm` and `.deb` files, `SHA256SUMS` and `SHA256SUMS.sigstore.json`, its cosign signature. Its notes are the changelog section, followed by GitHub's link to the full list of commits. It is created only after steps 2 and 3 succeed. Tags with a suffix such as `v1.0.0-rc1` become prereleases and do not move `latest`; they use the `## v1.0.0` section unless they have their own.
 
 Write the changelog section in the commit that the tag points to, and preview the notes before tagging:
 
@@ -110,6 +116,8 @@ scripts/release-notes.sh v0.2.0
 git tag -a v0.2.0 -m "v0.2.0"
 git push origin v0.2.0
 ```
+
+The signatures are keyless: the workflow gets a short-lived certificate from Sigstore for its own identity (`id-token: write`), so there is no signing key to store or rotate. Users verify them as shown in the [README](README.md#verify-a-download); the identity they check is this workflow's file name and a `v*` tag, so renaming `release.yml` means updating that command.
 
 One-time setup in GitHub, under Settings → Secrets and variables → Actions:
 

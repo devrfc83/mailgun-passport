@@ -64,8 +64,15 @@ func baseConfig() config.Config {
 // startServer runs the relay on a random loopback port and returns its address.
 func startServer(t *testing.T, cfg config.Config, sender Sender) string {
 	t.Helper()
+	_, addr := startServerWith(t, cfg, sender)
+	return addr
+}
+
+// startServerWith is startServer for tests that also need the Server.
+func startServerWith(t *testing.T, cfg config.Config, sender Sender, opts ...Option) (*Server, string) {
+	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv, err := New(cfg, sender, log)
+	srv, err := New(cfg, sender, log, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +82,7 @@ func startServer(t *testing.T, cfg config.Config, sender Sender) string {
 	}
 	t.Cleanup(func() { _ = srv.Close(); _ = ln.Close() })
 	go func() { _ = srv.Serve(ln) }()
-	return ln.Addr().String()
+	return srv, ln.Addr().String()
 }
 
 var testMessage = []byte(strings.Join([]string{

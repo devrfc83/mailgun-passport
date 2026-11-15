@@ -19,6 +19,7 @@ import (
 	"github.com/emersion/go-smtp"
 
 	"github.com/devrfc83/mailgun-passport/internal/config"
+	"github.com/devrfc83/mailgun-passport/internal/metrics"
 	"github.com/devrfc83/mailgun-passport/internal/parser"
 )
 
@@ -32,17 +33,42 @@ type Sender interface {
 }
 
 type Server struct {
-	cfg    config.Config
-	sender Sender
-	log    *slog.Logger
-	smtp   *smtp.Server
-	auth   *authLimiter
+	// cfg is replaced by Reconfigure; use conf to read it.
+	cfg     atomic.Pointer[config.Config]
+	sender  Sender
+	log     *slog.Logger
+	smtp    *smtp.Server
+	auth    *authLimiter
+	rate    *rateLimiter
+	certs   *certReloader
+	metrics *metrics.Set
 	// serving is true while the SMTP listener accepts connections.
 	serving atomic.Bool
 }
 
-func New(cfg config.Config, sender Sender, log *slog.Logger) (*Server, error) {
-	s := &Server{cfg: cfg, sender: sender, log: log, auth: newAuthLimiter(cfg.AuthMaxFailures, log)}
+// Option customizes a Server.
+type Option func(*Server)
+
+// WithMetrics makes the server count messages, connections and AUTH attempts in m.
+func WithMetrics(m *metrics.Set) Option {
+	return func(s *Server) { s.metrics = m }
+}
+
+func New(cfg config.Config, sender Sender, log *slog.Logger, opts ...Option) (*Server, error) {
+	s := &Server{
+		sender: sender,
+		log:    log,
+		auth:   newAuthLimiter(cfg.AuthMaxFailures, log),
+		rate:   newRateLimiter(cfg.RateLimitPerMinute),
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	if s.metrics == nil {
+		// Counts nothing anyone reads, but spares every call a nil check.
+		s.metrics = metrics.New("", "")
+	}
+	s.cfg.Store(&cfg)
 	be := &backend{server: s}
 	srv := smtp.NewServer(be)
 	srv.Addr = cfg.Listen
@@ -58,6 +84,7 @@ func New(cfg config.Config, sender Sender, log *slog.Logger) (*Server, error) {
 		if err != nil {
 			return nil, err
 		}
+		s.certs = certs
 		srv.TLSConfig = &tls.Config{
 			GetCertificate: certs.GetCertificate,
 			MinVersion:     tls.VersionTLS12,
@@ -67,8 +94,31 @@ func New(cfg config.Config, sender Sender, log *slog.Logger) (*Server, error) {
 	return s, nil
 }
 
+// conf returns the current configuration. It must not be modified.
+func (s *Server) conf() *config.Config {
+	return s.cfg.Load()
+}
+
+// Reconfigure applies the settings of cfg that can change while running: the
+// credentials and the allowed sender domains. The caller has already merged
+// cfg with the running configuration (see config.Config.Reload), so the
+// settings that need a restart are unchanged in it.
+func (s *Server) Reconfigure(cfg config.Config) {
+	s.cfg.Store(&cfg)
+}
+
+// ReloadCertificate loads the STARTTLS certificate again, whether or not its
+// files changed. It does nothing when STARTTLS is not enabled. On error the
+// previous certificate stays in use.
+func (s *Server) ReloadCertificate() error {
+	if s.certs == nil {
+		return nil
+	}
+	return s.certs.reload()
+}
+
 func (s *Server) ListenAndServe() error {
-	l, err := net.Listen("tcp", s.cfg.Listen)
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", s.conf().Listen)
 	if err != nil {
 		return err
 	}
@@ -76,12 +126,14 @@ func (s *Server) ListenAndServe() error {
 }
 
 func (s *Server) Serve(l net.Listener) error {
-	s.log.Info("listening on SMTP", "addr", l.Addr().String(), "domain", s.cfg.SMTPDomain,
-		"auth", s.cfg.AuthRequired(), "starttls", s.cfg.TLSCertFile != "",
-		"senders", senderSummary(s.cfg.AllowedSenderDomains), "max_connections", s.cfg.MaxConnections)
+	cfg := s.conf()
+	s.log.Info("listening on SMTP", "addr", l.Addr().String(), "domain", cfg.SMTPDomain,
+		"auth", cfg.AuthRequired(), "starttls", cfg.TLSCertFile != "",
+		"senders", senderSummary(cfg.AllowedSenderDomains), "max_connections", cfg.MaxConnections,
+		"rate_limit_per_minute", cfg.RateLimitPerMinute)
 	s.serving.Store(true)
 	defer s.serving.Store(false)
-	return s.smtp.Serve(newLimitListener(l, s.cfg.MaxConnections, s.log))
+	return s.smtp.Serve(newLimitListener(l, cfg.MaxConnections, s.log, s.metrics))
 }
 
 // Serving reports whether the SMTP listener is accepting connections.
@@ -106,6 +158,7 @@ func (b *backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 	if addr := c.Conn().RemoteAddr(); addr != nil {
 		s.remote = addr.String()
 		s.client, s.limited = authClient(addr)
+		s.rateKey, s.rated = clientPrefix(addr)
 	}
 	return s, nil
 }
@@ -117,6 +170,8 @@ type session struct {
 	remote       string
 	client       netip.Prefix
 	limited      bool // count AUTH failures under client
+	rateKey      netip.Prefix
+	rated        bool // count messages under rateKey
 	authed       bool
 	authFailures int
 	mailFrom     string
@@ -124,14 +179,14 @@ type session struct {
 }
 
 func (s *session) AuthMechanisms() []string {
-	if !s.server.cfg.AuthRequired() {
+	if !s.server.conf().AuthRequired() {
 		return nil
 	}
 	return []string{sasl.Plain, sasl.Login}
 }
 
 func (s *session) Auth(mech string) (sasl.Server, error) {
-	if !s.server.cfg.AuthRequired() {
+	if !s.server.conf().AuthRequired() {
 		return nil, smtp.ErrAuthUnsupported
 	}
 	if mech != sasl.Plain && mech != sasl.Login {
@@ -145,6 +200,7 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 		}
 	}
 	if s.limited && s.server.auth.blocked(s.client) {
+		s.server.metrics.AuthAttempts.Inc("blocked")
 		return nil, &smtp.SMTPError{
 			Code:         421,
 			EnhancedCode: smtp.EnhancedCode{4, 7, 0},
@@ -152,10 +208,13 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 		}
 	}
 	check := func(username, password string) error {
-		if secretEqual(username, s.server.cfg.SMTPUsername) && secretEqual(password, s.server.cfg.SMTPPassword) {
+		cfg := s.server.conf()
+		if secretEqual(username, cfg.SMTPUsername) && secretEqual(password, cfg.SMTPPassword) {
 			s.authed = true
+			s.server.metrics.AuthAttempts.Inc("success")
 			return nil
 		}
+		s.server.metrics.AuthAttempts.Inc("failure")
 		s.authFailures++
 		s.server.log.Warn("SMTP authentication failed", "remote", s.remote, "username", username)
 		if s.limited {
@@ -173,13 +232,20 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 }
 
 func (s *session) requireAuth() error {
-	if !s.server.cfg.AuthRequired() {
+	if !s.server.conf().AuthRequired() {
 		return nil
 	}
 	if !s.authed {
 		return errAuthRequired
 	}
 	return nil
+}
+
+// errRateLimited asks the client to come back later; clients retry on 4xx.
+var errRateLimited = &smtp.SMTPError{
+	Code:         451,
+	EnhancedCode: smtp.EnhancedCode{4, 7, 1},
+	Message:      "Rate limit exceeded, try again later",
 }
 
 // errAuthRequired is the RFC 4954 reply; go-smtp's own uses 502.
@@ -192,6 +258,11 @@ var errAuthRequired = &smtp.SMTPError{
 func (s *session) Mail(from string, _ *smtp.MailOptions) error {
 	if err := s.requireAuth(); err != nil {
 		return err
+	}
+	if s.rated && !s.server.rate.allow(s.rateKey) {
+		s.server.metrics.RateLimited.Inc("")
+		s.server.log.Warn("message refused: SMTP_RATE_LIMIT_PER_MINUTE reached", "remote", s.remote)
+		return errRateLimited
 	}
 	if from != "" {
 		if err := s.checkSender(from); err != nil {
@@ -221,11 +292,13 @@ func (s *session) Data(r io.Reader) error {
 		return err
 	}
 	parse := parser.Parse
-	if s.server.cfg.MailgunSendMode == config.SendModeMIME {
+	cfg := s.server.conf()
+	if cfg.MailgunSendMode == config.SendModeMIME {
 		parse = parser.ParseHeaders
 	}
-	msg, err := parse(s.mailFrom, s.rcptTo, r, s.server.cfg.MaxMessageBytes)
+	msg, err := parse(s.mailFrom, s.rcptTo, r, cfg.MaxMessageBytes)
 	if err != nil {
+		s.server.metrics.Messages.Inc("invalid")
 		s.server.log.Warn("failed to parse message", "err", err)
 		// go-smtp reports its own failures while reading DATA, such as
 		// 552 for a message over SMTP_MAX_MESSAGE_BYTES; pass them through.
@@ -245,8 +318,15 @@ func (s *session) Data(r io.Reader) error {
 	if err := s.server.sender.Send(context.Background(), msg); err != nil {
 		s.server.log.Error("Mailgun rejected message", "err", err, "from", msg.From)
 		s.server.log.Debug("rejected message details", "subject", msg.Subject)
-		return deliveryError(err)
+		reply := deliveryError(err)
+		if reply.Code >= 500 {
+			s.server.metrics.Messages.Inc("permanent_failure")
+		} else {
+			s.server.metrics.Messages.Inc("temporary_failure")
+		}
+		return reply
 	}
+	s.server.metrics.Messages.Inc("accepted")
 	return nil
 }
 
@@ -259,13 +339,15 @@ func senderSummary(domains []string) string {
 
 // checkSender enforces SMTP_ALLOWED_SENDER_DOMAINS on an address.
 func (s *session) checkSender(addr string) error {
-	if len(s.server.cfg.AllowedSenderDomains) == 0 {
+	cfg := s.server.conf()
+	if len(cfg.AllowedSenderDomains) == 0 {
 		return nil
 	}
 	domain, err := parser.AddressDomain(addr)
-	if err == nil && s.server.cfg.SenderDomainAllowed(domain) {
+	if err == nil && cfg.SenderDomainAllowed(domain) {
 		return nil
 	}
+	s.server.metrics.Messages.Inc("sender_rejected")
 	s.server.log.Warn("sender domain not allowed", "remote", s.remote, "sender", addr)
 	return &smtp.SMTPError{
 		Code:         550,

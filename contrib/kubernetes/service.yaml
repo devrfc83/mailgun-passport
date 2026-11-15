@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailgun-passport
+  labels:
+    app.kubernetes.io/name: mailgun-passport
+spec:
+  # Reachable inside the cluster only. Do not expose an SMTP relay through a
+  # LoadBalancer: it would be an open door, guarded by one password.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: mailgun-passport
+  ports:
+    - name: smtp
+      port: 587
+      targetPort: smtp

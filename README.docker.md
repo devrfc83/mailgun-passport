@@ -102,9 +102,15 @@ The image sets `HEALTH_LISTEN=0.0.0.0:8080` and a `HEALTHCHECK` that runs `mailg
 | Endpoint | `200` when |
 | --- | --- |
 | `GET /health` | the process runs and the SMTP listener accepts connections |
-| `GET /ready` | the same, and the last Mailgun call did not fail in a way that makes clients retry |
+| `GET /ready` | the same, and the last Mailgun call did not fail in a way that makes clients retry (with `QUEUE_DIR`: the queue has room and its disk works) |
 
 A `503` from `/ready` means clients are getting `451` right now, for example during a Mailgun outage. Use it for alerts and load balancers, and `/health` to decide on restarts. Port 8080 does not need to be published for the `HEALTHCHECK`; publish it, on `127.0.0.1`, only if something outside the container polls it. To turn the endpoints off, set `HEALTH_LISTEN=` (empty) and also disable the `HEALTHCHECK` (`--no-healthcheck`, or `healthcheck: {disable: true}` in Compose), which would otherwise mark the container `unhealthy`.
+
+## Queue, reload and metrics
+
+- **Queue.** Mount a volume at `/var/lib/mailgun-passport` and set `QUEUE_DIR` to it, and the relay stores each message on disk before answering `250`, then delivers it in the background with retries. A named volume starts out writable by the image's user, even with `--read-only`. In Compose: `volumes: [spool:/var/lib/mailgun-passport]`, `QUEUE_DIR: /var/lib/mailgun-passport` and a top-level `volumes: {spool: {}}`. Do not share the volume between containers. Messages that Mailgun refuses for good land in its `failed/` directory and are never deleted. See [the queue](https://github.com/devrfc83/mailgun-passport#the-on-disk-queue).
+- **Reload.** `docker kill --signal=HUP mailgun-passport` (or `docker compose kill -s HUP mailgun-passport`) reads the `*_FILE` secrets again, so a rotated API key takes effect without a restart, and reloads the STARTTLS certificate. Variables from `-e` and `--env-file` are fixed when the container is created: change those by recreating it. See [Reloading](https://github.com/devrfc83/mailgun-passport#reloading-the-configuration).
+- **Metrics.** `METRICS_ENABLED=true` adds `/metrics` (Prometheus format) to port 8080. Keep that port on a private network, or publish it on `127.0.0.1`. See [Metrics](https://github.com/devrfc83/mailgun-passport#metrics).
 
 ## Configuration
 
@@ -123,6 +129,9 @@ The most common settings:
 | `SMTP_AUTH_MAX_FAILURES` | `10` | Failed AUTH per client address before a 15-minute block; `0` disables |
 | `SMTP_LISTEN` | `0.0.0.0:2525` | Listen address inside the container |
 | `HEALTH_LISTEN` | `0.0.0.0:8080` | Address for `/health` and `/ready`; empty disables them |
+| `METRICS_ENABLED` | `false` | Also serve `/metrics` on `HEALTH_LISTEN` |
+| `QUEUE_DIR` | empty | Queue messages in this directory (a volume) before delivering them |
+| `SMTP_RATE_LIMIT_PER_MINUTE` | `0` (off) | Messages per minute per client address |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 
 By default only senders in the Mailgun domain's organization are accepted: with `MAILGUN_DOMAIN=mg.example.com`, that is `example.com` and any `*.example.com`. Every setting is described in the [main README](https://github.com/devrfc83/mailgun-passport#configuration).

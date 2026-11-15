@@ -1,0 +1,46 @@
+# golangci-lint configuration (v2). `make lint` runs it, together with
+# staticcheck, at a pinned version.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - bodyclose    # HTTP response bodies are closed
+    - errcheck     # errors are not dropped by accident
+    - errorlint    # errors.Is / errors.As instead of == and type assertions
+    - gosec        # the relay handles credentials and untrusted input
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - noctx        # HTTP requests carry a context
+    - staticcheck
+    - unconvert
+    - unused
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+    gosec:
+      excludes:
+        # The relay reads the files the operator names: secrets, certificates,
+        # the env file, the queue directory.
+        - G304
+    misspell:
+      locale: US
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      # Tests write fixtures, bind loopback ports and open temporary files.
+      - path: _test\.go
+        linters: [gosec, errcheck, noctx]
+
+formatters:
+  enable:
+    - gofmt

@@ -27,19 +27,36 @@ type Attachment struct {
 // envelope recipients that no header mentions. Header recipients that are not
 // in the envelope are never delivered to.
 type Message struct {
-	MailFrom    string
-	RcptTo      []string
-	From        string
-	To          []string
-	Cc          []string
-	Bcc         []string
-	ReplyTo     string
-	Subject     string
-	Text        string
-	HTML        string
-	Headers     map[string]string
-	Attachments []Attachment
-	Raw         []byte
+	MailFrom string
+	RcptTo   []string
+	From     string
+	To       []string
+	Cc       []string
+	Bcc      []string
+	ReplyTo  string
+	Subject  string
+	Text     string
+	HTML     string
+	Headers  map[string]string
+	// MailgunHeaders holds the X-Mailgun-* header fields the client set, by
+	// lower-case name (see MailgunHeaderNames), for the Mailgun client to turn
+	// into API options.
+	MailgunHeaders map[string]string
+	Attachments    []Attachment
+	Raw            []byte
+}
+
+// MailgunHeaderNames are the X-Mailgun-* header fields the relay understands,
+// in lower case.
+var MailgunHeaderNames = []string{
+	"x-mailgun-tag",
+	"x-mailgun-track",
+	"x-mailgun-track-clicks",
+	"x-mailgun-track-opens",
+	"x-mailgun-dkim",
+	"x-mailgun-require-tls",
+	"x-mailgun-skip-verification",
+	"x-mailgun-variables",
 }
 
 // Parse reads a message and decodes its MIME body into text, HTML and
@@ -114,6 +131,14 @@ func newMessage(mailFrom string, rcptTo []string, raw []byte, header func(string
 		Subject:  header("Subject"),
 		Headers:  selectedHeaders(header),
 		Raw:      raw,
+	}
+	for _, name := range MailgunHeaderNames {
+		if v := strings.TrimSpace(header(name)); v != "" {
+			if msg.MailgunHeaders == nil {
+				msg.MailgunHeaders = map[string]string{}
+			}
+			msg.MailgunHeaders[name] = v
+		}
 	}
 	if msg.From == "" {
 		return nil, fmt.Errorf("message has no sender")

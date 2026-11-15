@@ -1,0 +1,26 @@
+# Only pods that carry the label mailgun-passport-client=true may reach the
+# relay's SMTP port, and only the metrics scraper may reach port 8080.
+# NetworkPolicy needs a CNI that enforces it (Cilium does, on DigitalOcean).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mailgun-passport
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mailgun-passport
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              mailgun-passport-client: "true"
+      ports:
+        - port: 2525
+    - from:
+        # Adjust to where Prometheus and the kubelet's probes come from.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8080

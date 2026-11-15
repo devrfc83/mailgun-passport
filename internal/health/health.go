@@ -3,6 +3,7 @@
 package health
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -18,9 +19,14 @@ import (
 //   - /ready: also, the last Mailgun call did not fail in a way that makes
 //     clients retry. Not ready means clients are getting 451.
 //
-// smtpServing and mailgun are smtpd.Server.Serving and mailgunx.Client.Health.
-func Handler(smtpServing func() bool, mailgun func() error) http.Handler {
+// smtpServing and mailgun are smtpd.Server.Serving and mailgunx.Client.Health;
+// with the queue enabled, the second is queue.Queue.Health, since a Mailgun
+// outage then no longer makes clients retry.
+func Handler(smtpServing func() bool, mailgun func() error, opts ...Option) http.Handler {
 	mux := http.NewServeMux()
+	for _, opt := range opts {
+		opt(mux)
+	}
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		if !smtpServing() {
 			reply(w, http.StatusServiceUnavailable, "SMTP listener is not running")
@@ -40,6 +46,14 @@ func Handler(smtpServing func() bool, mailgun func() error) http.Handler {
 		reply(w, http.StatusOK, "ok")
 	})
 	return mux
+}
+
+// Option adds an endpoint to the handler.
+type Option func(*http.ServeMux)
+
+// WithMetrics serves h, the Prometheus metrics, at GET /metrics.
+func WithMetrics(h http.Handler) Option {
+	return func(mux *http.ServeMux) { mux.Handle("GET /metrics", h) }
 }
 
 func reply(w http.ResponseWriter, status int, text string) {
@@ -83,7 +97,13 @@ func Check(listen, path string) error {
 		// Never send a local health check through HTTP_PROXY.
 		Transport: &http.Transport{Proxy: nil},
 	}
-	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + path)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(host, port)+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

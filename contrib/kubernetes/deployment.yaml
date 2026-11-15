@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailgun-passport
+  labels:
+    app.kubernetes.io/name: mailgun-passport
+spec:
+  # One replica is enough for a relay, and with no queue nothing is lost when
+  # it restarts: clients that get 451 retry. More replicas behind the Service
+  # work as well, since the relay keeps no state. SMTP_RATE_LIMIT_PER_MINUTE
+  # and the AUTH limit are then counted per pod.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mailgun-passport
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mailgun-passport
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mailgun-passport
+          image: ghcr.io/devrfc83/mailgun-passport
+          ports:
+            - name: smtp
+              containerPort: 2525
+            - name: http
+              containerPort: 8080
+          env:
+            - name: MAILGUN_DOMAIN
+              value: mg.example.com # your Mailgun sending domain
+            # - name: MAILGUN_API_BASE
+            #   value: eu
+            - name: MAILGUN_API_KEY_FILE
+              value: /run/secrets/mailgun-passport/mailgun-api-key
+            - name: SMTP_USERNAME
+              value: relay
+            - name: SMTP_PASSWORD_FILE
+              value: /run/secrets/mailgun-passport/smtp-password
+            # The password crosses the cluster network in clear text. Acceptable
+            # inside a cluster with the NetworkPolicy below; for STARTTLS, mount
+            # a certificate and set SMTP_TLS_CERT_FILE and SMTP_TLS_KEY_FILE.
+            - name: SMTP_ALLOW_INSECURE_AUTH
+              value: "true"
+            - name: METRICS_ENABLED
+              value: "true"
+          volumeMounts:
+            - name: secrets
+              mountPath: /run/secrets/mailgun-passport
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: secrets
+          secret:
+            secretName: mailgun-passport
+            # Readable by the image's user (65532).
+            defaultMode: 0440

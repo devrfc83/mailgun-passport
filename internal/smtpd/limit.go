@@ -6,6 +6,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/devrfc83/mailgun-passport/internal/metrics"
 )
 
 // tooManyConnections is sent instead of the greeting. RFC 5321 lets a server
@@ -18,15 +20,18 @@ const tooManyConnections = "421 4.7.0 Too many connections, try again later\r\n"
 // kernel's backlog, where the client would only see a slow greeting.
 type limitListener struct {
 	net.Listener
-	slots chan struct{}
-	log   *slog.Logger
+	slots   chan struct{}
+	log     *slog.Logger
+	metrics *metrics.Set
 }
 
-func newLimitListener(l net.Listener, n int, log *slog.Logger) net.Listener {
+// newLimitListener caps l at n open connections; n of 0 or less means no cap.
+// Either way, connections are counted in m.
+func newLimitListener(l net.Listener, n int, log *slog.Logger, m *metrics.Set) net.Listener {
 	if n <= 0 {
-		return l
+		return &limitListener{Listener: l, log: log, metrics: m}
 	}
-	return &limitListener{Listener: l, slots: make(chan struct{}, n), log: log}
+	return &limitListener{Listener: l, slots: make(chan struct{}, n), log: log, metrics: m}
 }
 
 func (l *limitListener) Accept() (net.Conn, error) {
@@ -35,10 +40,14 @@ func (l *limitListener) Accept() (net.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
+		if l.slots == nil {
+			return l.accepted(c, func() {}), nil
+		}
 		select {
 		case l.slots <- struct{}{}:
-			return &limitConn{Conn: c, release: sync.OnceFunc(func() { <-l.slots })}, nil
+			return l.accepted(c, func() { <-l.slots }), nil
 		default:
+			l.metrics.Connections.Inc("refused")
 			l.log.Warn("connection refused: SMTP_MAX_CONNECTIONS reached",
 				"remote", c.RemoteAddr().String(), "max", cap(l.slots))
 			_ = c.SetWriteDeadline(time.Now().Add(time.Second))
@@ -46,6 +55,15 @@ func (l *limitListener) Accept() (net.Conn, error) {
 			_ = c.Close()
 		}
 	}
+}
+
+func (l *limitListener) accepted(c net.Conn, free func()) net.Conn {
+	l.metrics.Connections.Inc("accepted")
+	l.metrics.ConnectionsOpen.Add(1)
+	return &limitConn{Conn: c, release: sync.OnceFunc(func() {
+		free()
+		l.metrics.ConnectionsOpen.Add(-1)
+	})}
 }
 
 type limitConn struct {
