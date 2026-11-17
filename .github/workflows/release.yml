@@ -6,6 +6,7 @@
 #     made with this workflow's identity; README.md shows how to verify them
 #   - release notes from the tag's section in CHANGELOG.md, checked first so a
 #     tag without notes fails before anything is published
+#   - the Docker Hub full description, from README.docker.md
 #
 # Repository settings required (Settings > Secrets and variables > Actions):
 #   variable DOCKERHUB_NAMESPACE  Docker Hub organization that owns the image
@@ -13,6 +14,14 @@
 #                                 which is what organization access tokens use
 #   secret   DOCKERHUB_TOKEN      organization or personal access token with
 #                                 read/write access to <namespace>/mailgun-passport
+#
+# Optional, for the Docker Hub description (skipped with a notice without them):
+#   variable DOCKERHUB_DESCRIPTION_USERNAME  a Docker Hub user with Admin
+#                                            access to the repository
+#   secret   DOCKERHUB_DESCRIPTION_TOKEN     that user's personal access token,
+#                                            scope Read, Write, Delete; Docker
+#                                            Hub's description API does not
+#                                            accept organization access tokens
 #
 # Actions are pinned by commit SHA; the comment shows the release.
 name: Release
@@ -186,6 +195,44 @@ jobs:
           for image in "ghcr.io/${GITHUB_REPOSITORY,,}" "$DOCKERHUB_IMAGE"; do
             cosign sign --yes "$image@$DIGEST"
           done
+
+  # Not needed by the release: a failed description update must not hold back
+  # the release, and this job can be rerun on its own.
+  description:
+    needs: image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check Docker Hub description settings
+        id: settings
+        env:
+          USERNAME: ${{ vars.DOCKERHUB_DESCRIPTION_USERNAME }}
+          HAS_TOKEN: ${{ secrets.DOCKERHUB_DESCRIPTION_TOKEN != '' }}
+        run: |
+          if [ -z "$USERNAME" ] || [ "$HAS_TOKEN" != true ]; then
+            echo "::notice::Docker Hub description not updated: set the DOCKERHUB_DESCRIPTION_USERNAME variable and the DOCKERHUB_DESCRIPTION_TOKEN secret"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.settings.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: README.docker.md
+          sparse-checkout-cone-mode: false
+
+      # Docker Hub does not resolve relative links: README.docker.md uses
+      # absolute URLs only. The short description is edited on Docker Hub.
+      - if: steps.settings.outputs.enabled == 'true'
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+        with:
+          username: ${{ vars.DOCKERHUB_DESCRIPTION_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_DESCRIPTION_TOKEN }}
+          repository: ${{ vars.DOCKERHUB_NAMESPACE }}/mailgun-passport
+          readme-filepath: ./README.docker.md
 
   # Runs last, so a release only appears once packages and images are published.
   release:

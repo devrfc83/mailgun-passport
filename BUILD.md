@@ -126,5 +126,9 @@ One-time setup in GitHub, under Settings → Secrets and variables → Actions:
 | Variable | `DOCKERHUB_NAMESPACE` | the Docker Hub organization |
 | Secret | `DOCKERHUB_TOKEN` | an organization access token with read/write access to `<namespace>/mailgun-passport` |
 | Variable | `DOCKERHUB_USERNAME` | optional. Only needed with a personal access token: the Docker Hub user that owns it. Defaults to `DOCKERHUB_NAMESPACE`. |
+| Variable | `DOCKERHUB_DESCRIPTION_USERNAME` | optional. A Docker Hub user with Admin access to `<namespace>/mailgun-passport`. |
+| Secret | `DOCKERHUB_DESCRIPTION_TOKEN` | optional. That user's personal access token, with the Read, Write, Delete scope. |
+
+The last two let each release copy README.docker.md to the image's full description on Docker Hub. They are separate from `DOCKERHUB_TOKEN` because Docker Hub's API for repository descriptions accepts only personal access tokens, not organization access tokens, and it needs the Delete scope, which pushing images does not. Without them the `description` job skips with a notice and the release still succeeds. The short description is not versioned: edit it on Docker Hub. README.docker.md must use absolute URLs, since Docker Hub does not resolve relative ones.
 
 The GHCR package is created private on the first push. Make it public under the package settings on GitHub.
