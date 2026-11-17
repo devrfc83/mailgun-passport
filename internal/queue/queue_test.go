@@ -242,13 +242,18 @@ func slicesOf(err error, n int) []error {
 
 func TestFullQueueRefusesTemporarily(t *testing.T) {
 	msg := message(t)
-	q, _ := newQueue(t, t.TempDir(), &fakeSender{}, func(o *Options) { o.MaxBytes = int64(len(msg.Raw)) + 200 })
+	q, _ := newQueue(t, t.TempDir(), &fakeSender{})
 	if err := q.Health(); err != nil {
 		t.Fatalf("empty queue unhealthy: %v", err)
 	}
 	if err := q.Send(context.Background(), msg); err != nil {
 		t.Fatal(err)
 	}
+	// The stored header holds a timestamp whose length varies, so the limit is
+	// set from the file actually written: one byte short of a second message.
+	q.mu.Lock()
+	q.maxBytes = q.bytes + int64(len(msg.Raw)) - 1
+	q.mu.Unlock()
 	err := q.Send(context.Background(), msg)
 	qe, ok := errors.AsType[*Error](err)
 	if !ok || !qe.Temporary() || qe.ClientMessage() != "local queue is full" {
