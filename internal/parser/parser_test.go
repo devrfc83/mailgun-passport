@@ -173,6 +173,32 @@ func TestParseHeadersMatchesParse(t *testing.T) {
 	}
 }
 
+// TestHeaderDecodingModesAgree checks that both modes decode header fields the
+// same way: charsets other than UTF-8, values that do not decode, and invalid
+// UTF-8, which stays as it is.
+func TestHeaderDecodingModesAgree(t *testing.T) {
+	cases := []struct{ subject, want string }{
+		{"=?ISO-8859-2?Q?=A9koda?=", "Škoda"},
+		{"=?KOI8-R?B?8NLJ18XU?=", "Привет"},
+		{"=?X-UNKNOWN?Q?abc?=", "=?X-UNKNOWN?Q?abc?="},
+		{"caf\xe9", "caf\xe9"},
+	}
+	for _, c := range cases {
+		raw := "From: a@example.com\r\nSubject: " + c.subject + "\r\n\r\nbody\r\n"
+		full, err := Parse("", []string{"b@example.com"}, strings.NewReader(raw), 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		head, err := ParseHeaders("", []string{"b@example.com"}, strings.NewReader(raw), 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if full.Subject != c.want || head.Subject != c.want {
+			t.Errorf("%q: parsed %q, headers %q, want %q", c.subject, full.Subject, head.Subject, c.want)
+		}
+	}
+}
+
 func TestParseHeadersChecks(t *testing.T) {
 	if _, err := ParseHeaders("a@b.c", []string{"d@e.f"}, strings.NewReader("Subject: x\n\n0123456789"), 8); err == nil {
 		t.Fatal("expected size error")

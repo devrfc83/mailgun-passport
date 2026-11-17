@@ -2,6 +2,12 @@
 
 Each `## vX.Y.Z` section becomes the notes of the GitHub release for that tag. The release workflow fails if the section is missing.
 
+## v0.3.1
+
+### Fixed
+
+- `parsed` and `mime` modes now decode header fields the same way. `mime` mode used a decoder meant for MIME parameters: it replaced invalid UTF-8 with `U+FFFD`, so the two modes could split recipients into To, Cc and Bcc differently, and after an encoded word it put quotes around any text containing `=`, which could change a `Subject`. Both modes now use one decoder, which leaves a value it cannot decode as it is. Found by the fuzz tests.
+
 ## v0.3.0
 
 ### Added

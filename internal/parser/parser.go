@@ -5,10 +5,14 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"mime"
 	"net/mail"
+	"net/textproto"
 	"strings"
 
 	"github.com/jhillyerd/enmime/v2"
+	"golang.org/x/text/encoding/htmlindex"
+	"golang.org/x/text/transform"
 )
 
 // Attachment is a MIME part that is either attached or inline.
@@ -71,7 +75,7 @@ func Parse(mailFrom string, rcptTo []string, r io.Reader, maxBytes int64) (*Mess
 		return nil, fmt.Errorf("parse MIME: %w", err)
 	}
 
-	msg, err := newMessage(mailFrom, rcptTo, raw, env.GetHeader)
+	msg, err := newMessage(mailFrom, rcptTo, raw, headerDecoder(env.Root.Header))
 	if err != nil {
 		return nil, err
 	}
@@ -101,9 +105,41 @@ func ParseHeaders(mailFrom string, rcptTo []string, r io.Reader, maxBytes int64)
 	if err != nil {
 		return nil, fmt.Errorf("parse header: %w", err)
 	}
-	return newMessage(mailFrom, rcptTo, raw, func(name string) string {
-		return enmime.DecodeRFC2047(h.Get(name))
-	})
+	return newMessage(mailFrom, rcptTo, raw, headerDecoder(h))
+}
+
+// headerDecoder returns a function that gives the decoded value of a header
+// field. Both modes use it, so they read the same sender, subject and
+// recipients from the same header section.
+func headerDecoder(h textproto.MIMEHeader) func(string) string {
+	return func(name string) string {
+		return decodeHeader(h.Get(name))
+	}
+}
+
+var wordDecoder = &mime.WordDecoder{CharsetReader: charsetReader}
+
+// decodeHeader decodes RFC 2047 encoded words. A value without them, or one
+// that does not decode, is returned unchanged, invalid UTF-8 included.
+func decodeHeader(v string) string {
+	if !strings.Contains(v, "=?") {
+		return v
+	}
+	decoded, err := wordDecoder.DecodeHeader(v)
+	if err != nil {
+		return v
+	}
+	return decoded
+}
+
+// charsetReader converts the charsets that mime.WordDecoder does not know
+// (it knows UTF-8, ISO-8859-1 and US-ASCII) to UTF-8.
+func charsetReader(charset string, r io.Reader) (io.Reader, error) {
+	enc, err := htmlindex.Get(charset)
+	if err != nil {
+		return nil, err
+	}
+	return transform.NewReader(r, enc.NewDecoder()), nil
 }
 
 func readMessage(rcptTo []string, r io.Reader, maxBytes int64) ([]byte, error) {
