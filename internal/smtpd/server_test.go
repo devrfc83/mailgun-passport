@@ -1,6 +1,7 @@
 package smtpd
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -323,5 +324,101 @@ func TestConnectionLimit(t *testing.T) {
 func TestSecretEqual(t *testing.T) {
 	if !secretEqual("abc", "abc") || secretEqual("abc", "abd") || secretEqual("abc", "abcd") {
 		t.Fatal("secretEqual is wrong")
+	}
+}
+
+// TestShutdownWaitsForOpenSessions checks that Shutdown stops accepting at
+// once but returns only when the open session ends.
+func TestShutdownWaitsForOpenSessions(t *testing.T) {
+	srv, err := New(baseConfig(), &fakeSender{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	greeting, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil || !strings.HasPrefix(greeting, "220 ") {
+		t.Fatalf("greeting %q, %v", greeting, err)
+	}
+
+	shutErr := make(chan error, 1)
+	go func() { shutErr <- srv.Shutdown(context.Background()) }()
+	select {
+	case err := <-serveErr:
+		if err != nil && !IsClosed(err) {
+			t.Fatalf("Serve returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return after Shutdown")
+	}
+	select {
+	case err := <-shutErr:
+		t.Fatalf("Shutdown returned %v with a session open", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	_ = conn.Close()
+	select {
+	case err := <-shutErr:
+		if err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not return after the session ended")
+	}
+	if srv.Serving() {
+		t.Fatal("still serving after Shutdown")
+	}
+}
+
+// TestShutdownWhileAccepting shuts down while clients keep connecting, so a
+// connection can be accepted just as Shutdown starts. Run with -race.
+func TestShutdownWhileAccepting(t *testing.T) {
+	for range 20 {
+		srv, err := New(baseConfig(), &fakeSender{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		served := make(chan struct{})
+		go func() { _ = srv.Serve(ln); close(served) }()
+
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		for range 4 {
+			wg.Go(func() {
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					if c, err := net.Dial("tcp", ln.Addr().String()); err == nil {
+						_ = c.Close()
+					}
+				}
+			})
+		}
+		time.Sleep(5 * time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := srv.Shutdown(ctx); err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+		cancel()
+		close(stop)
+		wg.Wait()
+		<-served
 	}
 }

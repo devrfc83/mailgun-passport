@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -44,6 +45,11 @@ type Server struct {
 	metrics *metrics.Set
 	// serving is true while the SMTP listener accepts connections.
 	serving atomic.Bool
+
+	// mu guards listener and served, which Serve sets for Shutdown.
+	mu       sync.Mutex
+	listener net.Listener
+	served   chan struct{} // closed when go-smtp's Serve returns
 }
 
 // Option customizes a Server.
@@ -131,9 +137,17 @@ func (s *Server) Serve(l net.Listener) error {
 		"auth", cfg.AuthRequired(), "starttls", cfg.TLSCertFile != "",
 		"senders", senderSummary(cfg.AllowedSenderDomains), "max_connections", cfg.MaxConnections,
 		"rate_limit_per_minute", cfg.RateLimitPerMinute)
+	ll := newLimitListener(l, cfg.MaxConnections, s.log, s.metrics)
+	served := make(chan struct{})
+	s.mu.Lock()
+	s.listener, s.served = ll, served
+	s.mu.Unlock()
 	s.serving.Store(true)
-	defer s.serving.Store(false)
-	return s.smtp.Serve(newLimitListener(l, cfg.MaxConnections, s.log, s.metrics))
+	defer func() {
+		s.serving.Store(false)
+		close(served)
+	}()
+	return s.smtp.Serve(ll)
 }
 
 // Serving reports whether the SMTP listener is accepting connections.
@@ -145,7 +159,26 @@ func (s *Server) Close() error {
 	return s.smtp.Close()
 }
 
+// Shutdown stops accepting connections and waits for open sessions to end, or
+// for ctx to be done.
+//
+// go-smtp's Serve adds every accepted connection to a WaitGroup that its
+// Shutdown waits on, and nothing orders an Add that starts from zero before
+// that Wait, as sync.WaitGroup requires; the race detector reports it. So the
+// listener is closed first, and go-smtp's Shutdown runs only after Serve has
+// returned: every Add then happens before the Wait.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	l, served := s.listener, s.served
+	s.mu.Unlock()
+	if l != nil {
+		_ = l.Close()
+		select {
+		case <-served:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return s.smtp.Shutdown(ctx)
 }
 

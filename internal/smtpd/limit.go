@@ -23,6 +23,16 @@ type limitListener struct {
 	slots   chan struct{}
 	log     *slog.Logger
 	metrics *metrics.Set
+
+	closeOnce sync.Once
+	closeErr  error
+}
+
+// Close closes the listener once and returns that result on every call:
+// Server.Shutdown closes it before go-smtp's Shutdown closes it again.
+func (l *limitListener) Close() error {
+	l.closeOnce.Do(func() { l.closeErr = l.Listener.Close() })
+	return l.closeErr
 }
 
 // newLimitListener caps l at n open connections; n of 0 or less means no cap.
