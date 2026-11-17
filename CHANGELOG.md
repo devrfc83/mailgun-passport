@@ -9,6 +9,10 @@ Each `## vX.Y.Z` section becomes the notes of the GitHub release for that tag. T
 - `parsed` and `mime` modes now decode header fields the same way. `mime` mode used a decoder meant for MIME parameters: it replaced invalid UTF-8 with `U+FFFD`, so the two modes could split recipients into To, Cc and Bcc differently, and after an encoded word it put quotes around any text containing `=`, which could change a `Subject`. Both modes now use one decoder, which leaves a value it cannot decode as it is. Found by the fuzz tests.
 - A data race when the relay stops while a client is connecting. go-smtp's `Shutdown` waits for open sessions on a `sync.WaitGroup` that its accept loop adds to with nothing ordering the two, which `sync.WaitGroup` requires. The relay now closes its listener and waits for the accept loop to return before calling it. The race detector found it in CI.
 
+### Changed
+
+- A recipient without a domain gets `550 5.1.1` at `RCPT TO`. RFC 5321 allows `RCPT TO:<Postmaster>` for the server's own postmaster, and go-smtp v0.26 passes it on instead of answering `501`; the relay has no local mailboxes, and Mailgun would refuse the address after the client had been told `250`.
+
 ## v0.3.0
 
 ### Added

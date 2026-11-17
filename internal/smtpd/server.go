@@ -312,6 +312,17 @@ func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 	if err := s.requireAuth(); err != nil {
 		return err
 	}
+	// RFC 5321 allows RCPT TO:<Postmaster> without a domain, for the server's
+	// own postmaster. The relay has no mailbox of its own, and Mailgun would
+	// refuse the address after the client had been told 250.
+	if !strings.Contains(to, "@") {
+		s.server.log.Warn("recipient without a domain refused", "to", to)
+		return &smtp.SMTPError{
+			Code:         550,
+			EnhancedCode: smtp.EnhancedCode{5, 1, 1},
+			Message:      "Recipient must include a domain: this relay has no local mailboxes",
+		}
+	}
 	// A repeated recipient would get one copy per RCPT TO in mime mode.
 	if !slices.ContainsFunc(s.rcptTo, func(r string) bool { return strings.EqualFold(r, to) }) {
 		s.rcptTo = append(s.rcptTo, to)

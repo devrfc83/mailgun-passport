@@ -279,6 +279,30 @@ func TestDuplicateRecipientsAreMerged(t *testing.T) {
 	}
 }
 
+// TestRecipientWithoutDomain checks RCPT TO:<Postmaster>, which RFC 5321
+// allows without a domain. go-smtp before v0.26 refuses it with 501, later
+// versions pass it to the session, which refuses it with 550.
+func TestRecipientWithoutDomain(t *testing.T) {
+	sender := &fakeSender{}
+	addr := startServer(t, baseConfig(), sender)
+
+	c, err := smtp.Dial(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Mail("alice@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	err = c.Rcpt("Postmaster")
+	if code := smtpCode(t, err); code != 550 && code != 501 {
+		t.Fatalf("RCPT TO:<Postmaster> got %d", code)
+	}
+	if err := c.Rcpt("bob@example.com"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestConnectionLimit(t *testing.T) {
 	cfg := baseConfig()
 	cfg.MaxConnections = 1
