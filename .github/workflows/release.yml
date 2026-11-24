@@ -52,7 +52,7 @@ jobs:
           persist-credentials: false
       - name: Check that CHANGELOG.md has notes for the tag
         run: scripts/release-notes.sh "$GITHUB_REF_NAME" > /dev/null
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: ${{ env.GO_VERSION }}
       - run: make test
@@ -68,7 +68,7 @@ jobs:
         with:
           fetch-depth: 0 # scripts/version.sh needs the tags
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: ${{ env.GO_VERSION }}
 
