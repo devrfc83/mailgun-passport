@@ -7,7 +7,7 @@ require (
 	github.com/emersion/go-smtp v0.26.0
 	github.com/jhillyerd/enmime/v2 v2.5.0
 	github.com/joho/godotenv v1.5.1
-	golang.org/x/net v0.62.0
+	golang.org/x/net v0.63.0
 	golang.org/x/text v0.44.0
 )
 
@@ -30,5 +30,5 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/ssor/bom v0.0.0-20170718123548-6386211fdfcf // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 )
